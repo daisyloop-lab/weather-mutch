@@ -1,0 +1,2069 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>ウェザー・マッチ | Weather Match</title>
+<meta name="description" content="気象庁の天気予報データで遊ぶ、同じ天気を同調させて消すターン制パズル。出典: 気象庁ホームページ">
+<style>
+/* =====================================================================
+   Weather Match — 観測機器のような静謐さ × 空の色
+   空(背景グラデーション)が現在フェーズの降水確率を映すのが本作の署名。
+   ===================================================================== */
+:root {
+  --sky-top: #7FB4E6;
+  --sky-bottom: #EAF3F9;
+  --ink: #26313F;
+  --ink-soft: #5A6774;
+  --card: rgba(255, 255, 255, 0.78);
+  --card-line: rgba(38, 49, 63, 0.10);
+  --accent: #2E6FB0;
+  --tile-sun: #FFF3D6;
+  --tile-cloud-0: #F4F6F9;
+  --tile-cloud-1: #DDE2E9;
+  --tile-cloud-2: #B8C0CC;
+  --tile-rain: #DCEBFA;
+  --tile-snow: #EAF5FC;
+  --tile-chance: #FFE9D6;
+  --wet: rgba(78, 143, 209, 0.28);
+  --ice: rgba(168, 216, 240, 0.45);
+  --radius: 18px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html { height: 100%; }
+body {
+  min-height: 100%;
+  font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif;
+  color: var(--ink);
+  background: linear-gradient(180deg, var(--sky-top), var(--sky-bottom));
+  background-attachment: fixed;
+  transition: background 1.2s ease;
+  display: flex;
+  justify-content: center;
+  padding: max(10px, env(safe-area-inset-top)) 12px 24px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+body.dark-sky { --ink: #F2F6FA; --ink-soft: #C4CEDA; --card: rgba(22, 30, 42, 0.55); --card-line: rgba(255,255,255,0.14); }
+body.sky-quick { transition: background 0.72s ease-in-out; }
+.app { position: relative; z-index: 1; }
+body.sky-wash::after {
+  content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background: linear-gradient(180deg, var(--sky-top), var(--sky-bottom));
+  opacity: 0; animation: skyWash 0.72s ease-in-out;
+}
+@keyframes skyWash { 0% { opacity: 0; } 35% { opacity: 0.55; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { body.sky-wash::after { animation: none; } }
+.app { width: min(94vw, 430px); display: flex; flex-direction: column; gap: 10px; }
+
+/* ---- ヘッダー ---- */
+header { display: flex; align-items: center; gap: 8px; padding: 2px 2px 0; }
+h1 { font-size: 15px; font-weight: 700; letter-spacing: 0.14em; }
+h1 small { display: block; font-size: 9px; font-weight: 400; letter-spacing: 0.28em; color: var(--ink-soft); }
+.spacer { flex: 1; }
+button { font-family: inherit; color: inherit; }
+.hbtn {
+  border: 1px solid var(--card-line); background: var(--card);
+  border-radius: 999px; padding: 7px 12px; font-size: 12px; cursor: pointer;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
+#muteBtn { width: 38px; text-align: center; padding: 7px 0; }
+#volume { width: 64px; accent-color: var(--accent); }
+
+/* ---- フェーズカード(観測カード) ---- */
+.phase-card {
+  background: var(--card); border: 1px solid var(--card-line); border-radius: var(--radius);
+  padding: 12px 16px 10px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+}
+.phase-top { display: flex; align-items: baseline; gap: 10px; }
+#phaseTime {
+  font-size: 30px; font-weight: 700; letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums; font-family: "Hiragino Kaku Gothic ProN", ui-monospace, monospace;
+}
+#phaseText { font-size: 12px; color: var(--ink-soft); }
+#phaseDots { margin-left: auto; display: flex; gap: 5px; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--card-line); }
+.dot.done { background: var(--ink-soft); }
+.dot.now { background: var(--accent); box-shadow: 0 0 0 3px rgba(46,111,176,0.18); }
+.phase-read { display: flex; align-items: center; gap: 16px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--card-line); }
+.read { display: flex; flex-direction: column; }
+.read b { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.read span { font-size: 10px; color: var(--ink-soft); letter-spacing: 0.08em; }
+#quota { display: flex; gap: 5px; margin-left: auto; align-items: center; }
+.q { width: 12px; height: 12px; border-radius: 4px; border: 1.5px solid var(--ink-soft); opacity: 0.5; }
+.q.filled { background: var(--accent); border-color: var(--accent); opacity: 1; }
+#srcBadge {
+  display: inline-block; margin-top: 8px; font-size: 10px; color: var(--ink-soft);
+  letter-spacing: 0.06em;
+}
+#srcBadge.demo { color: #B05A2E; font-weight: 700; }
+body.dark-sky #srcBadge.demo { color: #FFB98A; }
+
+/* ---- 盤面 ---- */
+.board-wrap { position: relative; }
+#board {
+  position: relative; width: 100%; aspect-ratio: 1;
+  background: var(--card); border: 1px solid var(--card-line); border-radius: var(--radius);
+  overflow: hidden; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  touch-action: manipulation;
+}
+#board.phase-shift { animation: boardPulse 0.8s ease; }
+@keyframes boardPulse { 30% { box-shadow: 0 0 0 4px rgba(46,111,176,0.25); } }
+#cells { position: absolute; inset: 0; display: grid; }
+.cell { border: 0.5px solid var(--card-line); position: relative; transition: background 0.3s; }
+.cell.target { background: rgba(46, 111, 176, 0.14); }
+.cell.target::after {
+  content: ""; position: absolute; inset: 30%; border-radius: 50%;
+  border: 2px dashed rgba(46, 111, 176, 0.6);
+}
+.cell.target-merge { background: rgba(46, 111, 176, 0.22); }
+.cell.target-merge::after {
+  content: "＋"; position: absolute; inset: 0; display: grid; place-items: center;
+  color: var(--accent); font-weight: 700; font-size: 18px;
+}
+.cell.wet { background: var(--wet); }
+.cell.wet::before { content: "💧"; position: absolute; right: 3px; bottom: 2px; font-size: 10px; opacity: 0.8; }
+.cell.ice { background: var(--ice); }
+.cell.ice::before { content: "❄"; position: absolute; right: 3px; bottom: 1px; font-size: 11px; opacity: 0.75; color: #4E86A8; }
+
+#tiles { position: absolute; inset: 0; pointer-events: none; }
+.tile {
+  position: absolute; top: 0; left: 0; display: grid; place-items: center;
+  transition: transform 0.16s ease-out; will-change: transform;
+}
+/* フェーズ切替中はタイルがゆっくり大きく流れる(タイムラプス) */
+#board.board-timelapse .tile { transition: transform 0.72s cubic-bezier(0.55, 0, 0.2, 1); }
+.tile::before {
+  content: ""; position: absolute; inset: 9%; border-radius: 26%;
+  background: var(--tile-cloud-0);
+  box-shadow: inset 0 -2px 4px rgba(38,49,63,0.08), 0 2px 6px rgba(38,49,63,0.12);
+  transition: background 0.4s;
+}
+.tile .glyph { position: relative; font-size: calc(min(94vw, 430px) / 6 * 0.5); line-height: 1; filter: drop-shadow(0 1px 1px rgba(38,49,63,0.15)); }
+.t-sun::before { background: var(--tile-sun); }
+.t-cloud::before { background: var(--tile-cloud-0); }
+.t-cloud.cloud-1::before { background: var(--tile-cloud-1); }
+.t-cloud.cloud-2::before { background: var(--tile-cloud-2); }
+.t-cloud.cloud-2 .glyph { filter: brightness(0.72) drop-shadow(0 1px 1px rgba(38,49,63,0.2)); }
+.t-cloud.cloud-1 .glyph { filter: brightness(0.88); }
+.t-rain::before { background: var(--tile-rain); }
+.t-snow::before { background: var(--tile-snow); }
+.t-heat::before, .t-cold::before, .t-drop::before, .t-bolt::before {
+  background: var(--tile-chance);
+  box-shadow: inset 0 -2px 4px rgba(38,49,63,0.08), 0 0 12px rgba(255, 190, 110, 0.65);
+}
+.t-cold::before, .t-drop::before { box-shadow: inset 0 -2px 4px rgba(38,49,63,0.08), 0 0 12px rgba(120, 190, 240, 0.7); background: #E2F2FC; }
+.tile.selected { z-index: 3; }
+.tile.selected::before { outline: 2.5px solid var(--accent); outline-offset: -2px; transform: scale(1.06); }
+.tile.spawn { animation: spawnIn 0.32s ease-out; }
+@keyframes spawnIn { from { opacity: 0; scale: 0.4; } to { opacity: 1; scale: 1; } }
+.tile.pop { animation: popOut 0.26s ease-in forwards; z-index: 2; }
+@keyframes popOut { 40% { scale: 1.22; opacity: 1; } 100% { scale: 0.1; opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .tile { transition: none; }
+  .tile.spawn, .tile.pop, #board.phase-shift { animation: none; }
+  .tile.pop { opacity: 0; }
+  body { transition: none; }
+}
+
+#fx { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 4; }
+#flash { position: absolute; inset: 0; z-index: 3; pointer-events: none; border-radius: var(--radius); }
+.flash-warm { background: radial-gradient(circle, rgba(255,180,90,0.5), transparent 70%); animation: flashFade 0.42s ease-out forwards; }
+.flash-cool { background: radial-gradient(circle, rgba(120,190,240,0.5), transparent 70%); animation: flashFade 0.42s ease-out forwards; }
+.flash-bolt { background: rgba(255, 245, 200, 0.6); animation: flashFade 0.42s steps(3) forwards; }
+@keyframes flashFade { to { opacity: 0; } }
+
+/* ---- HUD / トースト ---- */
+.hud { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--ink-soft); padding: 0 4px; }
+.next { display: flex; align-items: center; gap: 6px; }
+.next-label { letter-spacing: 0.08em; }
+#nextQueue { display: flex; align-items: center; gap: 5px; }
+.next-chip {
+  width: 27px; height: 27px; border-radius: 9px; display: grid; place-items: center;
+  font-size: 15px; background: var(--tile-cloud-0);
+  box-shadow: inset 0 -1px 2px rgba(38,49,63,0.08), 0 1px 3px rgba(38,49,63,0.12);
+}
+.next-chip + .next-chip { width: 21px; height: 21px; border-radius: 7px; font-size: 11px; opacity: 0.6; }
+.nc-sun { background: var(--tile-sun); }
+.nc-rain { background: var(--tile-rain); }
+.nc-snow { background: var(--tile-snow); }
+.nc-cloud-1 { background: var(--tile-cloud-1); }
+.nc-cloud-2 { background: var(--tile-cloud-2); }
+.nc-heat, .nc-bolt { background: var(--tile-chance); box-shadow: 0 0 8px rgba(255,190,110,0.7); }
+.nc-cold, .nc-drop { background: #E2F2FC; box-shadow: 0 0 8px rgba(120,190,240,0.75); }
+.next-chip.bump { animation: chipIn 0.28s ease; }
+@keyframes chipIn { from { scale: 0.4; opacity: 0.2; } }
+@media (prefers-reduced-motion: reduce) { .next-chip.bump { animation: none; } }
+.hud b { color: var(--ink); font-size: 15px; font-variant-numeric: tabular-nums; }
+#combo { color: var(--accent); font-weight: 700; animation: comboBeat 0.4s ease; }
+body.dark-sky #combo { color: #9EC9F2; }
+@keyframes comboBeat { 40% { scale: 1.15; } }
+#status { font-size: 12px; color: var(--ink-soft); }
+#toast {
+  position: fixed; left: 50%; top: 18%; translate: -50% 0; z-index: 30;
+  background: var(--card); border: 1px solid var(--card-line); color: var(--ink);
+  border-radius: 999px; padding: 9px 18px; font-size: 13px; font-weight: 700;
+  opacity: 0; pointer-events: none; transition: opacity 0.25s, translate 0.25s;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
+#toast.show { opacity: 1; translate: -50% 6px; }
+#toast.chain { color: var(--accent); }
+#toast.rescue { color: #B05A2E; }
+#toast.tutorial { color: var(--accent); font-size: 14px; }
+
+/* フェーズ切替の時刻バナー: 中央に大きく浮かび、#phaseTime表示へ収束するように消える */
+#timeBanner {
+  position: fixed; left: 50%; top: 34%; translate: -50% -50%; z-index: 35;
+  font-size: 52px; font-weight: 700; letter-spacing: 0.03em;
+  font-variant-numeric: tabular-nums;
+  font-family: "Hiragino Kaku Gothic ProN", ui-monospace, monospace;
+  color: var(--ink); text-shadow: 0 2px 18px rgba(46,111,176,0.35), 0 0 2px var(--card);
+  opacity: 0; pointer-events: none;
+}
+#timeBanner.run { animation: bannerRun 0.95s ease-out forwards; }
+@keyframes bannerRun {
+  0%   { opacity: 0; scale: 0.82; translate: -50% -40%; }
+  22%  { opacity: 1; scale: 1.05; translate: -50% -50%; }
+  58%  { opacity: 1; scale: 1;    translate: -50% -50%; }
+  100% { opacity: 0; scale: 0.9;  translate: -50% -68%; }
+}
+@media (prefers-reduced-motion: reduce) { #timeBanner.run { animation: none; opacity: 0; } }
+
+/* ---- フッター(一回性 + 出典) ---- */
+footer { font-size: 10px; color: var(--ink-soft); text-align: center; line-height: 1.7; padding-top: 2px; }
+footer .once { letter-spacing: 0.04em; }
+
+/* ---- オーバーレイ共通 ---- */
+.overlay {
+  position: fixed; inset: 0; z-index: 40; display: grid; place-items: center;
+  background: rgba(30, 40, 54, 0.45); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  padding: 16px;
+}
+.overlay[hidden] { display: none; }
+.panel {
+  width: min(92vw, 400px); max-height: 86vh; overflow-y: auto;
+  background: var(--card); border: 1px solid var(--card-line); border-radius: 22px;
+  padding: 22px 20px; text-align: center;
+}
+body.dark-sky .panel { background: rgba(22, 30, 42, 0.9); }
+
+/* ---- エンディング ---- */
+#endStars { font-size: 34px; letter-spacing: 0.1em; margin: 4px 0 2px; }
+.star { color: var(--card-line); }
+.star.on { color: #F2B03D; text-shadow: 0 0 12px rgba(242,176,61,0.5); }
+#endDigest { font-size: 17px; font-weight: 700; margin: 8px 0 4px; letter-spacing: 0.04em; }
+#endStats { font-size: 12px; color: var(--ink-soft); margin-bottom: 12px; }
+#endTimeline { display: flex; flex-direction: column; gap: 2px; margin: 10px 0 14px; }
+.tl { display: grid; grid-template-columns: 1fr auto auto auto; gap: 10px; align-items: center;
+     font-size: 12px; padding: 5px 10px; border-radius: 10px; background: rgba(127,180,230,0.10); }
+.tl-time { text-align: left; font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+.tl-glyph { font-size: 15px; }
+.tl-pops, .tl-temp { font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+#endOnce { font-size: 10.5px; color: var(--ink-soft); line-height: 1.6; margin-bottom: 14px; }
+.primary {
+  background: var(--accent); color: #fff; border: none; border-radius: 999px;
+  padding: 11px 26px; font-size: 14px; font-weight: 700; cursor: pointer;
+}
+.end-note { font-size: 9.5px; color: var(--ink-soft); margin-top: 12px; }
+
+/* ---- エリア選択 ---- */
+.area-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+#areaTitle { font-size: 15px; font-weight: 700; flex: 1; text-align: center; }
+.area-nav { border: none; background: none; font-size: 13px; color: var(--accent); cursor: pointer; padding: 4px 8px; }
+body.dark-sky .area-nav { color: #9EC9F2; }
+#areaList { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.area-item {
+  border: 1px solid var(--card-line); background: rgba(255,255,255,0.5); border-radius: 12px;
+  padding: 11px 6px; font-size: 13px; cursor: pointer;
+}
+body.dark-sky .area-item { background: rgba(255,255,255,0.08); }
+.area-item.current { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+body.dark-sky .area-item.current { color: #9EC9F2; }
+.area-loading { grid-column: 1 / -1; font-size: 12px; color: var(--ink-soft); line-height: 1.8; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>ウェザー・マッチ<small>WEATHER MATCH</small></h1>
+    <span class="spacer"></span>
+    <button id="areaBtn" class="hbtn" aria-label="予報エリアを変更">東京都 ▾</button>
+    <button id="muteBtn" class="hbtn" aria-label="ミュート">🔊</button>
+    <input id="volume" type="range" min="0" max="100" value="70" aria-label="音量">
+  </header>
+
+  <section class="phase-card" aria-live="polite">
+    <div class="phase-top">
+      <span id="phaseTime">--:--</span>
+      <span id="phaseText"></span>
+      <span id="phaseDots"></span>
+    </div>
+    <div class="phase-read">
+      <span class="read"><b id="phasePops">--%</b><span>降水確率</span></span>
+      <span class="read"><b id="phaseTemp">--</b><span>気温</span></span>
+      <span id="quota" aria-label="このフェーズの消去ノルマ"></span>
+    </div>
+    <span id="srcBadge"></span>
+  </section>
+
+  <div class="board-wrap">
+    <div id="board" aria-label="ゲーム盤面">
+      <div id="tiles"></div>
+      <div id="flash" hidden></div>
+      <canvas id="fx"></canvas>
+    </div>
+  </div>
+
+  <div class="hud">
+    <span>手数 <b id="moves">0</b></span>
+    <span class="next" title="次に現れるアイテム"><span class="next-label">つぎ</span><span id="nextQueue" aria-label="次に現れるアイテム"></span></span>
+    <span id="combo" hidden></span>
+    <span class="spacer"></span>
+    <span id="status" hidden></span>
+  </div>
+
+  <div id="toast" role="status"></div>
+  <div id="timeBanner" aria-hidden="true"></div>
+
+  <footer>
+    <div class="once">「今日のウェザー・マッチ」— 実際の予報が題材のため、盤面は毎日・毎時変わります</div>
+    <div>出典: 気象庁ホームページ(天気予報データを加工して利用) / 音が出ます(🔊で切替)</div>
+  </footer>
+</div>
+
+<div id="ending" class="overlay" hidden>
+  <div class="panel">
+    <div id="endStars"></div>
+    <div id="endDigest"></div>
+    <div id="endStats"></div>
+    <div id="endTimeline"></div>
+    <div id="endOnce"></div>
+    <button id="replayBtn" class="primary">最新の予報でもう一度</button>
+    <div class="end-note">出典: 気象庁ホームページ(加工して利用)</div>
+  </div>
+</div>
+
+<div id="areaModal" class="overlay" hidden>
+  <div class="panel">
+    <div class="area-head">
+      <button id="areaBack" class="area-nav" hidden>‹ 戻る</button>
+      <span id="areaTitle">地方を選択</span>
+      <button id="areaClose" class="area-nav">閉じる</button>
+    </div>
+    <div id="areaList"></div>
+  </div>
+</div>
+
+
+<script>
+/* ============================================================
+ * logic.js(モジュール分割: 1ファイル内に logic / weather / main を保持)
+ * ============================================================ */
+/* =========================================================================
+ * Weather Match — logic.js
+ * 盤面・移動・マージ判定・連鎖・新規出現抽選・ノルマ/フェーズ進行・
+ * 濡れマス/凍結マス・天候スキル・手詰まり検知と救済・コンボ計測・効率評価
+ * 純粋ロジック層。DOM/fetchには一切依存しない(Node上でテスト可能)。
+ * ========================================================================= */
+(function (global) {
+  "use strict";
+
+  /* ---------------- 調整用パラメータ(仮値。相談しながら詰める) ---------------- */
+  const CONFIG = {
+    boardW: 6,
+    boardH: 6,
+    initialItems: 8,          // 開始時に盤面へ配置するアイテム数
+    spawnPerTurn: 1,          // ターン終了時の新規出現数
+    phaseSeedItems: 3,        // フェーズ移行時、最下段の新規行に置くアイテム数(0〜boardW)
+    // ノルマ(マージ回数)。フェーズ数に応じて自動決定
+    quotaFor: (phaseCount) => (phaseCount >= 6 ? 2 : 4),
+    // チャンスアイテム閾値(Weather Drop値を確認するまでの仮値)
+    heatTempMax: 35,          // 灼熱: tempMax >= 35(猛暑日)
+    coldTempMax: 0,           // 極寒: tempMax <= 0(真冬日)
+    coldTempMin: -5,          // 極寒: または tempMin <= -5
+    dropPops: 70,             // 💧: pops >= 70
+    chanceRate: 0.12,         // 条件成立フェーズ中、新規出現がチャンス枠になる確率
+    boltRange: 1,             // ⚡️/💧の範囲消去: 中心から±1(3×3)
+    // 濡れマス/凍結マス(仮の対応表)
+    wetRules: [               // pops閾値 → {count, duration}
+      { pops: 80, count: 3, duration: 3 },
+      { pops: 60, count: 2, duration: 3 },
+      { pops: 50, count: 1, duration: 2 },
+    ],
+    iceRules: [               // 雪比率閾値 → {count, duration}
+      { snow: 0.6, count: 3, duration: 4 },
+      { snow: 0.3, count: 2, duration: 3 },
+    ],
+    blockRespawnChance: 0.30, // 該当フェーズ中、毎ターン追加発生する確率(上限countまで)
+    // 天候スキル: 追加消去1マスあたりのノルマ加算量(仕様: すべて加算=1.0)
+    skillQuotaPerTile: 1,
+    // 次の出現予告: 先読みして表示する個数
+    previewCount: 2,
+    // 連鎖ボーナス: 1手で pairs>=2 のとき
+    chainMoveRefund: 1,       // 効率評価上、実質手数を pairs-1 だけ差し引く
+    // 効率評価(星): par = 総ノルマ × parFactor 手
+    parFactor: 2.4,
+    star3: 1.0,               // moves <= par*1.0 → ★3
+    star2: 1.5,               // moves <= par*1.5 → ★2
+  };
+
+  /* ---------------- 乱数(シード注入可能・テスト再現用) ---------------- */
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /* ---------------- 盤面ユーティリティ ---------------- */
+  const idx = (x, y, w) => y * w + x;
+  const xy = (i, w) => [i % w, Math.floor(i / w)];
+  function neighbors(i, w, h) {
+    const [x, y] = xy(i, w);
+    const out = [];
+    if (x > 0) out.push(i - 1);
+    if (x < w - 1) out.push(i + 1);
+    if (y > 0) out.push(i - w);
+    if (y < h - 1) out.push(i + w);
+    return out;
+  }
+
+  const BASE_TYPES = ["sun", "cloud", "rain", "snow"];
+  const CHANCE_TYPES = ["heat", "cold", "drop", "bolt"];
+  const isChance = (t) => CHANCE_TYPES.includes(t);
+
+  /* ---------------- 状態生成 ---------------- */
+  function createState(phases, opts = {}) {
+    const w = opts.w || CONFIG.boardW;
+    const h = opts.h || CONFIG.boardH;
+    const rng = opts.rng || mulberry32(opts.seed != null ? opts.seed : (Date.now() & 0xffffffff));
+    const quota = CONFIG.quotaFor(phases.length);
+    const st = {
+      w, h, rng,
+      cells: new Array(w * h).fill(null),  // null | {type}
+      blocked: {},                          // idx -> {kind:'wet'|'ice', turns}
+      phases,                               // weather.js が構築したフェーズ配列
+      phaseIndex: 0,
+      quotaPerPhase: quota,
+      quotaProgress: 0,                     // 現フェーズのマージ回数
+      moveCount: 0,
+      effectiveMoves: 0,                    // 連鎖ボーナス控除後の実質手数
+      mergeEvents: 0,                       // 累計マージ回数(pairs単位)
+      chainCount: 0,                        // 連鎖(1手複数ペア)発生回数
+      comboStreak: 0,                       // 連続マージ手数
+      maxCombo: 0,
+      rescueCount: 0,
+      ended: false,
+    };
+    seedInitialItems(st, CONFIG.initialItems);
+    st.spawnQueue = [];          // 次の出現予告(先頭から順に湧く)
+    fillSpawnQueue(st);
+    applyPhaseBlocks(st, true);
+    return st;
+  }
+
+  function currentPhase(st) { return st.phases[st.phaseIndex]; }
+
+  /* 現フェーズの出現比率で1種抽選 */
+  function rollType(st) {
+    const ph = currentPhase(st);
+    // チャンス枠
+    const eligible = chanceEligible(ph);
+    if (eligible.length && st.rng() < CONFIG.chanceRate) {
+      return eligible[Math.floor(st.rng() * eligible.length)];
+    }
+    const weights = ph.weights; // {sun,cloud,rain,snow} 合計1
+    let r = st.rng(), acc = 0;
+    for (const t of BASE_TYPES) {
+      acc += weights[t] || 0;
+      if (r < acc) return t;
+    }
+    return BASE_TYPES.find((t) => (weights[t] || 0) > 0) || "cloud";
+  }
+
+  /* フェーズ条件からチャンスアイテム候補を返す(データは一切歪めない: 判定のみ) */
+  function chanceEligible(ph) {
+    const out = [];
+    if (ph.tempMax != null && ph.tempMax >= CONFIG.heatTempMax) out.push("heat");
+    if ((ph.tempMax != null && ph.tempMax <= CONFIG.coldTempMax) ||
+        (ph.tempMin != null && ph.tempMin <= CONFIG.coldTempMin)) out.push("cold");
+    if (ph.pops != null && ph.pops >= CONFIG.dropPops) out.push("drop");
+    if (ph.weatherText && ph.weatherText.includes("雷")) out.push("bolt");
+    return out;
+  }
+
+  /* 出現予告キューを規定数まで補充する。抽選は現フェーズの比率に従う */
+  function fillSpawnQueue(st) {
+    while (st.spawnQueue.length < CONFIG.previewCount) st.spawnQueue.push(rollType(st));
+    return st.spawnQueue;
+  }
+
+  function emptyCells(st, excludeBlocked = true) {
+    const out = [];
+    for (let i = 0; i < st.cells.length; i++) {
+      if (st.cells[i]) continue;
+      if (excludeBlocked && st.blocked[i]) continue;
+      out.push(i);
+    }
+    return out;
+  }
+
+  function seedInitialItems(st, n) {
+    for (let k = 0; k < n; k++) {
+      const empties = emptyCells(st);
+      if (!empties.length) break;
+      const i = empties[Math.floor(st.rng() * empties.length)];
+      st.cells[i] = { type: rollType(st) };
+    }
+  }
+
+  /* ---------------- 移動先の妥当性 ---------------- */
+  /* 隣接1マスのみ。空きマス(非ブロック)へ移動 or 同種アイテムマスへマージ移動 */
+  function validTargets(st, from) {
+    const item = st.cells[from];
+    if (!item || st.ended) return [];
+    const out = [];
+    for (const n of neighbors(from, st.w, st.h)) {
+      if (st.blocked[n]) continue;                 // 濡れ/凍結マスへは移動不可
+      const occ = st.cells[n];
+      if (!occ) out.push({ to: n, kind: "move" });
+      else if (occ.type === item.type) out.push({ to: n, kind: "merge" });
+    }
+    return out;
+  }
+
+  /* ---------------- 移動+マージ解決 ----------------
+   * 着地マスに同種が居ればそれ+着地マスの隣接同種すべてが同時マージ(連鎖)。
+   * 戻り値: {ok, from, to, cleared:[idx], pairs, chain, chanceEffect, comboStreak, quotaDone}
+   */
+  function applyMove(st, from, to) {
+    const targets = validTargets(st, from);
+    const t = targets.find((v) => v.to === to);
+    if (!t) return { ok: false };
+    const item = st.cells[from];
+    st.cells[from] = null;
+
+    // マージ相手の収集: 着地マスの占有(同種) + 着地マスの隣接同種
+    const partners = new Set();
+    const occ = st.cells[to];
+    if (occ && occ.type === item.type) partners.add(to);
+    for (const n of neighbors(to, st.w, st.h)) {
+      if (n === from) continue; // 元居たマスは今空
+      const c = st.cells[n];
+      if (c && c.type === item.type) partners.add(n);
+    }
+
+    st.cells[to] = item; // いったん着地
+    st.moveCount++;
+
+    let cleared = [], pairs = 0, chanceEffect = null, skillEffect = null;
+    if (partners.size > 0) {
+      pairs = partners.size;
+      const clearedSet = new Set([to, ...partners]);
+      for (const i of clearedSet) st.cells[i] = null;
+      // チャンスアイテム同士のマージ → 効果発動(従来通り)
+      if (isChance(item.type)) {
+        chanceEffect = fireChance(st, item.type, to);
+        for (const i of chanceEffect.cleared) clearedSet.add(i);
+      }
+      // 天候スキル: 着地タイプに応じた追加効果(sun/rain/snowのみ。cloud・チャンスは無し)
+      skillEffect = fireSkill(st, item.type, to);
+      let skillQuota = 0;
+      if (skillEffect) {
+        for (const i of skillEffect.cells) clearedSet.add(i);
+        // スキルによる追加消去はすべてノルマに反映する(係数はCONFIGで調整可)
+        skillQuota = skillEffect.cells.length * CONFIG.skillQuotaPerTile;
+      }
+      cleared = [...clearedSet];
+      st.mergeEvents += pairs;
+      st.quotaProgress += pairs + (chanceEffect ? chanceEffect.quotaBonus : 0) + skillQuota;
+      st.comboStreak++;
+      st.maxCombo = Math.max(st.maxCombo, st.comboStreak);
+      if (pairs >= 2) st.chainCount++;
+      st.effectiveMoves += 1 - Math.min(pairs - 1, 1) * CONFIG.chainMoveRefund * (pairs >= 2 ? 1 : 0);
+      if (pairs >= 2) st.effectiveMoves -= (pairs - 2); // 3ペア以上はさらに控除
+    } else {
+      st.comboStreak = 0;
+      st.effectiveMoves += 1;
+    }
+
+    const quotaDone = st.quotaProgress >= st.quotaPerPhase;
+    return {
+      ok: true, from, to, cleared, pairs,
+      chain: pairs >= 2, chanceEffect, skillEffect,
+      comboStreak: st.comboStreak, quotaDone,
+    };
+  }
+
+  /* 天候スキル(マージ成立時のみ発動):
+   * ☀️ sun : 着地マス周囲8マスの濡れ/凍結ブロックを即解除(乾燥・融解)。アイテムは消さない
+   * 🌧️ rain: 着地マスと同じ縦1列の他アイテムを追加消去(縦のウォッシュ)
+   * ❄️ snow: 着地マスと同じ横1列の他アイテムを追加消去(横のブリザード)
+   * ☁️ cloud / チャンスアイテム: 追加効果なし
+   * すべて盤面境界チェック済み。呼出側でSetにより二重消去を防止する */
+  function fireSkill(st, type, to) {
+    const [tx, ty] = xy(to, st.w);
+    if (type === "sun") {
+      const thawed = [];
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const x = tx + dx, y = ty + dy;
+          if (x < 0 || y < 0 || x >= st.w || y >= st.h) continue;
+          const i = idx(x, y, st.w);
+          if (st.blocked[i]) {
+            thawed.push({ idx: i, kind: st.blocked[i].kind });
+            delete st.blocked[i];
+          }
+        }
+      }
+      return { type: "sun", cells: [], thawed };
+    }
+    if (type === "rain") {
+      const cells = [];
+      for (let y = 0; y < st.h; y++) {
+        const i = idx(tx, y, st.w);
+        if (i !== to && st.cells[i]) { cells.push(i); st.cells[i] = null; }
+      }
+      return { type: "rain", cells, thawed: [] };
+    }
+    if (type === "snow") {
+      const cells = [];
+      for (let x = 0; x < st.w; x++) {
+        const i = idx(x, ty, st.w);
+        if (i !== to && st.cells[i]) { cells.push(i); st.cells[i] = null; }
+      }
+      return { type: "snow", cells, thawed: [] };
+    }
+    return null;
+  }
+
+  /* チャンス効果: heat/cold=全消去, drop/bolt=範囲(3×3)消去 */
+  function fireChance(st, type, center) {
+    const cleared = [];
+    if (type === "heat" || type === "cold") {
+      for (let i = 0; i < st.cells.length; i++) {
+        if (st.cells[i]) { cleared.push(i); st.cells[i] = null; }
+      }
+      // 全消去は現フェーズのノルマを満たす扱い(仮ルール)
+      return { type, cleared, quotaBonus: Math.max(0, st.quotaPerPhase - st.quotaProgress) };
+    }
+    const [cx, cy] = xy(center, st.w);
+    for (let y = cy - CONFIG.boltRange; y <= cy + CONFIG.boltRange; y++) {
+      for (let x = cx - CONFIG.boltRange; x <= cx + CONFIG.boltRange; x++) {
+        if (x < 0 || y < 0 || x >= st.w || y >= st.h) continue;
+        const i = idx(x, y, st.w);
+        if (st.cells[i]) { cleared.push(i); st.cells[i] = null; }
+      }
+    }
+    return { type, cleared, quotaBonus: 2 }; // 範囲消去は+2マージ相当(仮)
+  }
+
+  /* ---------------- ターン終了処理 ----------------
+   * 1) ブロックマスの残ターン減算
+   * 2) ノルマ達成ならフェーズ移行(1段スライド) or エンディング
+   * 3) 新規出現1個(空き非ブロックマスが無ければスキップ)
+   * 4) ブロックマスの追加発生
+   * 5) 手詰まり検知 → 救済
+   */
+  function endTurn(st) {
+    if (st.ended) return { ended: true };
+    const ev = { spawned: null, blockedExpired: [], blockedNew: [],
+                 phaseAdvanced: false, shiftedOutRow: null, seededRow: [],
+                 ended: false, rescue: null };
+
+    // 1) ブロック減算
+    for (const k of Object.keys(st.blocked)) {
+      st.blocked[k].turns--;
+      if (st.blocked[k].turns <= 0) { ev.blockedExpired.push(+k); delete st.blocked[k]; }
+    }
+
+    // 2) フェーズ進行
+    if (st.quotaProgress >= st.quotaPerPhase) {
+      if (st.phaseIndex >= st.phases.length - 1) {
+        st.ended = true;
+        ev.ended = true;
+        return ev; // エンディングへ
+      }
+      advancePhase(st, ev);
+    }
+
+    // 3) 新規出現: 予告キューの先頭から湧く(予告の正確性を保証)
+    const empties = emptyCells(st);
+    if (empties.length) {
+      const i = empties[Math.floor(st.rng() * empties.length)];
+      const type = st.spawnQueue.length ? st.spawnQueue.shift() : rollType(st);
+      st.cells[i] = { type };
+      ev.spawned = { idx: i, type };
+      fillSpawnQueue(st);
+    } // 空き無し → スキップ(キューは消費しない=予告は据え置き)
+
+    // 4) ブロック追加発生
+    ev.blockedNew = maybeSpawnBlocks(st);
+
+    // 5) 手詰まり検知
+    if (!anyValidMove(st)) ev.rescue = rescue(st);
+
+    return ev;
+  }
+
+  function advancePhase(st, ev) {
+    st.phaseIndex++;
+    st.quotaProgress = 0;
+    // 盤面を1段上へスライド: 最上段は「過去の時間」として消える
+    ev.shiftedOutRow = st.cells.slice(0, st.w);
+    for (let y = 0; y < st.h - 1; y++) {
+      for (let x = 0; x < st.w; x++) {
+        st.cells[idx(x, y, st.w)] = st.cells[idx(x, y + 1, st.w)];
+      }
+    }
+    // 最下段に新しい行(新フェーズの比率でシード)
+    const bottom = [];
+    for (let x = 0; x < st.w; x++) {
+      st.cells[idx(x, st.h - 1, st.w)] = null;
+      bottom.push(idx(x, st.h - 1, st.w));
+    }
+    const picks = shuffle(bottom, st.rng).slice(0, CONFIG.phaseSeedItems);
+    for (const i of picks) {
+      const type = rollType(st);
+      st.cells[i] = { type };
+      ev.seededRow.push({ idx: i, type });
+    }
+    // ブロックマスもスライド(1段上へ)。最上段行にあったものは消滅
+    const nb = {};
+    for (const k of Object.keys(st.blocked)) {
+      const i = +k;
+      if (i >= st.w) nb[i - st.w] = st.blocked[k];
+    }
+    st.blocked = nb;
+    // 予告キューは新フェーズの比率で引き直す(切替の瞬間に予告も天気が変わる)
+    st.spawnQueue = [];
+    fillSpawnQueue(st);
+    ev.phaseAdvanced = true;
+    applyPhaseBlocks(st, false, ev);
+  }
+
+  /* フェーズ開始時のブロックマス初期配置 */
+  function applyPhaseBlocks(st, initial, ev) {
+    const rule = blockRuleFor(currentPhase(st));
+    if (!rule) return;
+    const added = spawnBlocks(st, rule.kind, rule.count, rule.duration);
+    if (ev) ev.blockedNew = (ev.blockedNew || []).concat(added);
+  }
+
+  function blockRuleFor(ph) {
+    if (!ph) return null;
+    // 凍結: 雪比率で判定
+    for (const r of CONFIG.iceRules) {
+      if ((ph.weights.snow || 0) >= r.snow) return { kind: "ice", count: r.count, duration: r.duration };
+    }
+    // 濡れ: 降水確率で判定
+    if (ph.pops != null) {
+      for (const r of CONFIG.wetRules) {
+        if (ph.pops >= r.pops) return { kind: "wet", count: r.count, duration: r.duration };
+      }
+    }
+    return null; // 穏やかなフェーズはブロック無し
+  }
+
+  function spawnBlocks(st, kind, count, duration) {
+    const added = [];
+    const current = Object.values(st.blocked).filter((b) => b.kind === kind).length;
+    const empties = emptyCells(st, true);
+    const n = Math.min(Math.max(0, count - current), empties.length);
+    const picks = shuffle(empties, st.rng).slice(0, n);
+    for (const i of picks) {
+      st.blocked[i] = { kind, turns: duration };
+      added.push({ idx: i, kind, turns: duration });
+    }
+    return added;
+  }
+
+  function maybeSpawnBlocks(st) {
+    const rule = blockRuleFor(currentPhase(st));
+    if (!rule) return [];
+    if (st.rng() >= CONFIG.blockRespawnChance) return [];
+    return spawnBlocks(st, rule.kind, rule.count, rule.duration);
+  }
+
+  /* ---------------- 手詰まり検知と救済 ---------------- */
+  function anyValidMove(st) {
+    for (let i = 0; i < st.cells.length; i++) {
+      if (st.cells[i] && validTargets(st, i).length) return true;
+    }
+    return false;
+  }
+
+  /* 救済(失敗によるゲームオーバー無し設計):
+   * 1) まず全ブロックマスを解除して再判定
+   * 2) それでも詰みなら、最多種の最近接ペアを強制マージ(自動一段階圧縮) */
+  function rescue(st) {
+    const ev = { thawed: false, forcedMerge: null };
+    if (Object.keys(st.blocked).length) {
+      st.blocked = {};
+      ev.thawed = true;
+      if (anyValidMove(st)) { st.rescueCount++; return ev; }
+    }
+    const byType = {};
+    st.cells.forEach((c, i) => { if (c) (byType[c.type] = byType[c.type] || []).push(i); });
+    let best = null;
+    for (const t of Object.keys(byType)) {
+      const arr = byType[t];
+      if (arr.length < 2) continue;
+      for (let a = 0; a < arr.length; a++) for (let b = a + 1; b < arr.length; b++) {
+        const [ax, ay] = xy(arr[a], st.w), [bx, by] = xy(arr[b], st.w);
+        const d = Math.abs(ax - bx) + Math.abs(ay - by);
+        if (!best || d < best.d || (d === best.d && arr.length > best.n)) {
+          best = { d, n: arr.length, a: arr[a], b: arr[b], type: t };
+        }
+      }
+    }
+    if (best) {
+      st.cells[best.a] = null;
+      st.cells[best.b] = null;
+      st.mergeEvents += 1;
+      st.quotaProgress += 1;
+      ev.forcedMerge = { a: best.a, b: best.b, type: best.type };
+    }
+    st.rescueCount++;
+    return ev;
+  }
+
+  /* ---------------- 効率評価(星3段階) ---------------- */
+  function starRating(st) {
+    const totalQuota = st.quotaPerPhase * st.phases.length;
+    const par = totalQuota * CONFIG.parFactor;
+    const m = st.effectiveMoves;
+    if (m <= par * CONFIG.star3) return 3;
+    if (m <= par * CONFIG.star2) return 2;
+    return 1;
+  }
+
+  /* エンディング用: 天気の移り変わりダイジェスト(連続同一カテゴリは圧縮) */
+  function weatherDigest(phases) {
+    const names = { sun: "晴れ", cloud: "くもり", rain: "雨", snow: "雪", mixed: "雨か雪" };
+    const seq = [];
+    for (const ph of phases) {
+      const label = ph.dominant ? names[ph.dominant] || ph.dominant : "?";
+      if (!seq.length || seq[seq.length - 1] !== label) seq.push(label);
+    }
+    return seq;
+  }
+
+  function shuffle(arr, rng) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  const api = {
+    CONFIG, BASE_TYPES, CHANCE_TYPES, isChance,
+    mulberry32, idx, xy, neighbors,
+    createState, currentPhase, rollType, chanceEligible,
+    emptyCells, validTargets, applyMove, endTurn, fireSkill, fillSpawnQueue,
+    anyValidMove, rescue, starRating, weatherDigest,
+    blockRuleFor, spawnBlocks,
+  };
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  else global.WMLogic = api;
+})(typeof window !== "undefined" ? window : globalThis);
+</script>
+<script>
+/* ============================================================
+ * weather.js(モジュール分割: 1ファイル内に logic / weather / main を保持)
+ * ============================================================ */
+/* =========================================================================
+ * Weather Match — weather.js
+ * JMA取得、時刻ベースのフェーズ切り出し(24時間先まで)、
+ * 地域時系列予報(VPFD)の実行時検証とフォールバック、モックデータ。
+ *
+ * 原則: 予報にない時間帯データの推測・捏造は行わない。
+ *  - popsは6時間区分の公式値をそのまま各フェーズに割り当てる(補間しない)
+ *  - VPFDの3時間天気はそのままカテゴリに使う。「雨または雪」は両方を等分表現
+ *  - 値が取得できない項目は null のまま保持し、UIは「-」表示にする
+ * ========================================================================= */
+(function (global) {
+  "use strict";
+
+  const FORECAST_URL = (area) => `https://www.jma.go.jp/bosai/forecast/data/forecast/${area}.json`;
+  const AREA_URL = "https://www.jma.go.jp/bosai/common/const/area.json";
+  // 非公式(リバースエンジニアリング)エンドポイント。実行時に必ず検証してから使う
+  const VPFD_URL = (code) => `https://www.jma.go.jp/bosai/jmatile/data/wdist/VPFD/${code}.json`;
+
+  const DEFAULT_AREA = "130000"; // 東京都(府県予報区)。※Weather Dropの110000から変更
+
+  /* ---------------- 天気カテゴリ判定(Weather Dropのcategoryロジック踏襲) ---------------- */
+  /* weatherCode先頭桁: 1=晴れ 2=くもり 3=雨 4=雪 */
+  function categoryFromCode(code) {
+    const c = String(code || "")[0];
+    return c === "1" ? "sun" : c === "2" ? "cloud" : c === "3" ? "rain" : c === "4" ? "snow" : "cloud";
+  }
+
+  /* 予報テキストから出現比率を作る。
+   * 例: 「晴れ時々くもり」→ {sun:0.7, cloud:0.3}
+   * 比率は出現抽選のための演出パラメータであり、予報の表示値ではない。 */
+  const TEXT_CATS = [
+    { re: /晴/g, cat: "sun" },
+    { re: /(くもり|曇)/g, cat: "cloud" },
+    { re: /雪/g, cat: "snow" },   // 「雨または雪」対策で雪を雨より先に走査はしない(位置で判定)
+    { re: /雨/g, cat: "rain" },
+  ];
+  function weightsFromText(text, fallbackCode) {
+    const found = []; // {cat, pos}
+    if (text) {
+      for (const { re, cat } of TEXT_CATS) {
+        re.lastIndex = 0;
+        const m = re.exec(text);
+        if (m && !found.some((f) => f.cat === cat)) found.push({ cat, pos: m.index });
+      }
+      found.sort((a, b) => a.pos - b.pos);
+    }
+    if (!found.length) {
+      const cat = categoryFromCode(fallbackCode);
+      return normalize({ [cat]: 1 });
+    }
+    const w = {};
+    const primary = found[0].cat;
+    w[primary] = 1;
+    for (let k = 1; k < found.length; k++) {
+      const { cat, pos } = found[k];
+      const before = text.slice(Math.max(0, pos - 5), pos);
+      let share = 0.3;                       // 併記(「晴れ くもり」等)の既定
+      if (/一時/.test(before)) share = 0.2;
+      else if (/時々/.test(before)) share = 0.3;
+      else if (/のち|後/.test(before)) share = 1.0;
+      else if (/所により/.test(before)) share = 0.15;
+      w[cat] = (w[cat] || 0) + share;
+    }
+    return normalize(w);
+  }
+  function normalize(w) {
+    const total = Object.values(w).reduce((a, b) => a + b, 0) || 1;
+    const out = { sun: 0, cloud: 0, rain: 0, snow: 0 };
+    for (const k of Object.keys(w)) out[k] = w[k] / total;
+    return out;
+  }
+  function dominantOf(weights) {
+    let best = "cloud", bv = -1;
+    for (const k of Object.keys(weights)) if (weights[k] > bv) { bv = weights[k]; best = k; }
+    return best;
+  }
+
+  /* VPFDの3時間天気文字列 → 比率 */
+  function weightsFromVPFDWeather(s) {
+    if (/雨または雪|雪または雨/.test(s)) return normalize({ rain: 0.5, snow: 0.5 });
+    if (/雪/.test(s)) return normalize({ snow: 1 });
+    if (/雨/.test(s)) return normalize({ rain: 1 });
+    if (/晴/.test(s)) return normalize({ sun: 1 });
+    return normalize({ cloud: 1 });
+  }
+
+  /* 調整用パラメータ(バランス相談用に外出し) */
+  const TUNING = {
+    // VPFDモードの出現比率合成: 3時間カテゴリを主とし、同日の公式予報テキストに
+    // 含まれる「それ以外の」カテゴリ(例: くもり所により雨 の雨)へ回す割合。
+    // 0 にすると3時間カテゴリ100%(単一栽培)に戻る
+    vpfdSecondaryShare: 0.2,
+  };
+
+  /* 3時間カテゴリ(主)に、日別テキスト由来の副次カテゴリを合成する。
+   * 主カテゴリ以外が日別テキストに無ければ何もしない(純度を保つ)。
+   * どちらも同じ対象日の公式予報由来であり、推測・捏造にはあたらない */
+  function applySecondaryWeights(w3, dailyW, share) {
+    const s = share != null ? share : TUNING.vpfdSecondaryShare;
+    if (!dailyW || s <= 0) return w3;
+    const primaries = Object.keys(w3).filter((k) => w3[k] > 0);
+    const others = {};
+    let total = 0;
+    for (const k of Object.keys(dailyW)) {
+      if (primaries.includes(k) || !(dailyW[k] > 0)) continue;
+      others[k] = dailyW[k]; total += dailyW[k];
+    }
+    if (!total) return w3;
+    const out = {};
+    for (const k of primaries) out[k] = w3[k] * (1 - s);
+    for (const k of Object.keys(others)) out[k] = (out[k] || 0) + s * (others[k] / total);
+    return normalize(out);
+  }
+
+  /* ---------------- forecast JSON パース補助 ---------------- */
+  function parseISO(s) { return new Date(s); }
+
+  /* timeSeries[1](6時間pops)から、時刻tを含む区間のpopsを返す。無ければnull */
+  function popsAt(forecast, t, areaIndex = 0) {
+    return popsForRange(forecast, t, new Date(t.getTime() + 1), areaIndex);
+  }
+
+  /* フェーズ[start,end)と最も長く重なる6時間区間の公式popsを返す(補間はしない)。
+   * 発表切替の隙間などで重なりが全く無い場合は null(UIは「--%」表示)。
+   * 例: 11時発表直後はpops区間が12:00開始になり、11時台のフェーズは公式値なし */
+  function popsForRange(forecast, rangeStart, rangeEnd, areaIndex = 0) {
+    try {
+      const ts = forecast[0].timeSeries.find((x) => x.areas[0].pops);
+      if (!ts) return null;
+      const defs = ts.timeDefines.map(parseISO);
+      const pops = ts.areas[areaIndex].pops;
+      let best = null, bestOverlap = 0;
+      for (let i = 0; i < defs.length; i++) {
+        const start = defs[i];
+        const end = i + 1 < defs.length ? defs[i + 1] : new Date(start.getTime() + 6 * 3600e3);
+        const overlap = Math.min(end, rangeEnd) - Math.max(start, rangeStart);
+        if (overlap <= 0) continue;
+        const v = parseInt(pops[i], 10);
+        if (!Number.isFinite(v)) continue; // 空文字("")の区間は公式値なし扱い
+        if (overlap > bestOverlap) { bestOverlap = overlap; best = v; }
+      }
+      return best;
+    } catch (e) { return null; }
+  }
+
+  /* timeSeries[0](日別weatherCodes/weathers)から、時刻tの属する日の値 */
+  function dailyWeatherAt(forecast, t, areaIndex = 0) {
+    try {
+      const ts = forecast[0].timeSeries.find((x) => x.areas[0].weatherCodes);
+      const defs = ts.timeDefines.map(parseISO);
+      for (let i = defs.length - 1; i >= 0; i--) {
+        if (sameJstDate(defs[i], t) || defs[i] <= t) {
+          if (sameJstDate(defs[i], t) || (i === defs.length - 1) ||
+              (t < defs[i + 1] || sameJstDate(defs[i], t))) {
+            // その日のdefine(00:00起点でない場合もあるため日付一致を優先)
+          }
+        }
+      }
+      // シンプルに: 日付(JST)一致するdefineを探し、無ければ直近過去
+      let pick = -1;
+      for (let i = 0; i < defs.length; i++) {
+        if (sameJstDate(defs[i], t)) { pick = i; break; }
+        if (defs[i] <= t) pick = i;
+      }
+      if (pick < 0) return null;
+      return {
+        code: ts.areas[areaIndex].weatherCodes[pick],
+        text: (ts.areas[areaIndex].weathers || [])[pick] || "",
+      };
+    } catch (e) { return null; }
+  }
+
+  function sameJstDate(a, b) {
+    const ja = new Date(a.getTime() + 9 * 3600e3), jb = new Date(b.getTime() + 9 * 3600e3);
+    return ja.getUTCFullYear() === jb.getUTCFullYear() &&
+           ja.getUTCMonth() === jb.getUTCMonth() && ja.getUTCDate() === jb.getUTCDate();
+  }
+
+  /* timeSeries[2](気温)から日別のmin/max。JMA慣行: 00:00=最低, 09:00=最高。
+   * 実データの癖: 11時/17時発表では「今日の最低」は提供されず、11時発表は
+   * 最高と同値のダミーがT00に入る(例: temps ["24","24",...])。発表時刻が
+   * 10時以降なら、発表当日のminは不採用(null)にする */
+  function tempsAt(forecast, t, areaIndex = 0) {
+    let min = null, max = null;
+    try {
+      const report = parseISO(forecast[0].reportDatetime);
+      const reportJstHour = new Date(report.getTime() + 9 * 3600e3).getUTCHours();
+      const minUnreliableToday = reportJstHour >= 10;
+      const ts = forecast[0].timeSeries.find((x) => x.areas[0].temps);
+      const defs = ts.timeDefines.map(parseISO);
+      const temps = ts.areas[areaIndex].temps;
+      for (let i = 0; i < defs.length; i++) {
+        if (!sameJstDate(defs[i], t)) continue;
+        const h = new Date(defs[i].getTime() + 9 * 3600e3).getUTCHours();
+        const v = parseInt(temps[i], 10);
+        if (!Number.isFinite(v)) continue;
+        if (h === 0) {
+          if (!(minUnreliableToday && sameJstDate(defs[i], report))) min = v;
+        } else if (h === 9) max = v;
+      }
+    } catch (e) { /* null のまま */ }
+    return { min, max };
+  }
+
+  /* ---------------- フェーズ構築: 6時間pops方式(4フェーズ) ---------------- */
+  function buildPhasesFromForecast(forecast, now, areaIndex = 0) {
+    const ts = forecast[0].timeSeries.find((x) => x.areas[0].pops);
+    if (!ts) throw new Error("popsが見つかりません");
+    const defs = ts.timeDefines.map(parseISO);
+    const horizon = new Date(now.getTime() + 24 * 3600e3);
+    const phases = [];
+    for (let i = 0; i < defs.length && phases.length < 4; i++) {
+      const start = defs[i];
+      const end = i + 1 < defs.length ? defs[i + 1] : new Date(start.getTime() + 6 * 3600e3);
+      if (end <= now) continue;          // 過去の区間
+      if (start >= horizon) break;       // 24時間より先
+      const mid = new Date(Math.max(start.getTime(), now.getTime()));
+      const dw = dailyWeatherAt(forecast, mid, areaIndex) || { code: "200", text: "" };
+      const weights = weightsFromText(dw.text, dw.code);
+      const { min, max } = tempsAt(forecast, mid, areaIndex);
+      const p = parseInt(ts.areas[areaIndex].pops[i], 10);
+      phases.push({
+        start, end,
+        label: rangeLabel(start, end),
+        pops: Number.isFinite(p) ? p : null,
+        weights,
+        dominant: dominantOf(weights),
+        weatherText: dw.text,
+        tempMin: min, tempMax: max,
+        source: "pops6h",
+      });
+    }
+    if (!phases.length) throw new Error("24時間分のpops区間が切り出せません");
+    return phases;
+  }
+
+  /* ---------------- フェーズ構築: 地域時系列予報方式(3時間×最大8フェーズ) ---------------- */
+  function validateVPFD(json) {
+    try {
+      const a = json.areaTimeSeries;
+      if (!a || !Array.isArray(a.timeDefines) || !Array.isArray(a.weather)) return false;
+      if (a.timeDefines.length !== a.weather.length) return false;
+      if (!a.timeDefines.length) return false;
+      if (!a.timeDefines.every((d) => d && typeof d.dateTime === "string")) return false;
+      if (!a.weather.every((w) => typeof w === "string")) return false;
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function buildPhasesFromVPFD(vpfd, forecast, now, areaIndex = 0) {
+    if (!validateVPFD(vpfd)) throw new Error("VPFD構造が不正");
+    const a = vpfd.areaTimeSeries;
+    const defs = a.timeDefines.map((d) => parseISO(d.dateTime));
+    const horizon = new Date(now.getTime() + 24 * 3600e3);
+    const temps = vpfd.pointTimeSeries || null;
+    const tDefs = temps ? temps.timeDefines.map((d) => parseISO(d.dateTime)) : [];
+    const phases = [];
+    for (let i = 0; i < defs.length && phases.length < 8; i++) {
+      const start = defs[i];
+      const end = new Date(start.getTime() + 3 * 3600e3); // duration: PT3H
+      if (end <= now) continue;
+      if (start >= horizon) break;
+      const weights3 = weightsFromVPFDWeather(a.weather[i]);
+      const mid = new Date(Math.max(start.getTime(), now.getTime()));
+      const dw = forecast ? dailyWeatherAt(forecast, mid, areaIndex) : null;
+      const dailyW = dw ? weightsFromText(dw.text, dw.code) : null;
+      // 3時間カテゴリを主に、同日の予報テキストの副次カテゴリを少量合成
+      const weights = applySecondaryWeights(weights3, dailyW);
+      const dayTemps = forecast ? tempsAt(forecast, mid, areaIndex) : { min: null, max: null };
+      // 気温: VPFDの3時間毎の実予報値(その時刻の値。捏造せずそのまま)
+      let temp = null;
+      if (temps) {
+        const ti = tDefs.findIndex((d) => d.getTime() === start.getTime());
+        if (ti >= 0 && Number.isFinite(+temps.temperature[ti])) temp = +temps.temperature[ti];
+      }
+      phases.push({
+        start, end,
+        label: rangeLabel(start, end),
+        pops: forecast ? popsForRange(forecast, start, end, areaIndex) : null, // 最大重なりの6h公式値(補間なし)
+        weights,
+        dominant: dominantOf(weights),
+        weatherText: (dw && dw.text) || a.weather[i],
+        temp,
+        tempMin: dayTemps.min, tempMax: dayTemps.max,
+        source: "vpfd3h",
+      });
+    }
+    if (phases.length < 2) throw new Error("VPFDから十分な区間が切り出せません");
+    return phases;
+  }
+
+  function rangeLabel(start, end) {
+    const f = (d) => {
+      const j = new Date(d.getTime() + 9 * 3600e3);
+      return `${String(j.getUTCHours()).padStart(2, "0")}:00`;
+    };
+    const fe = (d) => {
+      const j = new Date(d.getTime() + 9 * 3600e3);
+      const h = j.getUTCHours();
+      return h === 0 ? "24:00" : `${String(h).padStart(2, "0")}:00`;
+    };
+    return `${f(start)}-${fe(end)}`;
+  }
+
+  /* ---------------- モックデータ(フォールバック。Weather Dropのdemo方式踏襲) ---------------- */
+  /* デモであることをUIに明示する前提。実在の予報と誤認させない */
+  function mockForecast(now) {
+    const base = new Date(now); base.setMinutes(0, 0, 0);
+    const h = base.getHours();
+    const slot = new Date(base); slot.setHours(h - (h % 6));
+    const defs = [], pops = [];
+    const popsPattern = [10, 30, 60, 80, 40];
+    for (let i = 0; i < 5; i++) {
+      defs.push(new Date(slot.getTime() + i * 6 * 3600e3).toISOString());
+      pops.push(String(popsPattern[i]));
+    }
+    const day0 = new Date(base); const day1 = new Date(base.getTime() + 24 * 3600e3);
+    return [{
+      publishingOffice: "デモ",
+      reportDatetime: base.toISOString(),
+      timeSeries: [
+        {
+          timeDefines: [day0.toISOString(), day1.toISOString()],
+          areas: [{ area: { name: "デモ地方", code: "999999" },
+                    weatherCodes: ["212", "300"],
+                    weathers: ["くもり 夜 雨 所により 雷を伴う", "雨 時々 くもり"] }],
+        },
+        { timeDefines: defs, areas: [{ area: { name: "デモ地方", code: "999999" }, pops }] },
+        {
+          timeDefines: [isoAtJstHour(day0, 0), isoAtJstHour(day0, 9), isoAtJstHour(day1, 0), isoAtJstHour(day1, 9)],
+          areas: [{ area: { name: "デモ地方", code: "999999" }, temps: ["18", "27", "19", "26"] }],
+        },
+      ],
+    }];
+  }
+  function isoAtJstHour(d, h) {
+    const j = new Date(d.getTime() + 9 * 3600e3);
+    const out = new Date(Date.UTC(j.getUTCFullYear(), j.getUTCMonth(), j.getUTCDate(), h) - 9 * 3600e3);
+    return out.toISOString();
+  }
+
+  function mockVPFD(now) {
+    const base = new Date(now); base.setMinutes(0, 0, 0);
+    const h = base.getHours();
+    const slot = new Date(base); slot.setHours(h - (h % 3));
+    const weathers = ["晴れ", "晴れ", "くもり", "くもり", "雨", "雨", "くもり", "晴れ", "くもり"];
+    const temps = [22, 24, 23, 21, 19, 18, 18, 20, 21];
+    const timeDefines = [], temperature = [];
+    for (let i = 0; i < weathers.length; i++) {
+      timeDefines.push({ dateTime: new Date(slot.getTime() + i * 3 * 3600e3).toISOString(), duration: "PT3H" });
+      temperature.push(temps[i]);
+    }
+    return {
+      firstAreaCode: "999999", publishingOffice: "デモ", infoType: "デモ",
+      reportDateTime: base.toISOString(),
+      areaTimeSeries: { timeDefines, weather: weathers, wind: [] },
+      pointTimeSeries: { pointNameJP: "デモ", timeDefines: timeDefines.map((d) => ({ dateTime: d.dateTime })), temperature },
+    };
+  }
+
+  /* ---------------- 取得オーケストレーション(ブラウザ用) ----------------
+   * 戻り値: { phases, mode: 'vpfd3h'|'pops6h'|'demo', areaName }
+   * two-track: VPFDを実行時に疎通確認し、検証OKなら本採用。NGなら6時間pops方式。
+   * 全滅ならモック(デモ表示)。 */
+  async function loadPhases(areaCode, now, fetchFn) {
+    const f = fetchFn || (typeof fetch !== "undefined" ? fetch.bind(globalThis) : null);
+    if (!f) return { phases: buildPhasesFromForecast(mockForecast(now), now), mode: "demo", areaName: "デモ" };
+
+    let forecast = null, areaName = "";
+    try {
+      const res = await f(FORECAST_URL(areaCode));
+      if (res.ok) {
+        forecast = await res.json();
+        areaName = forecast[0].timeSeries[0].areas[0].area.name || "";
+      }
+    } catch (e) { /* forecast取得失敗 */ }
+
+    if (forecast) {
+      // VPFD疎通確認: 府県予報区コード → 一次細分区域コードの順に試す
+      const class10 = forecast[0].timeSeries[0].areas[0].area.code; // 例: 130010
+      const forecastReport = forecast[0].reportDatetime || null;
+      for (const code of dedupe([areaCode, class10])) {
+        try {
+          const res = await f(VPFD_URL(code));
+          if (!res.ok) continue;
+          const vpfd = await res.json();
+          if (!validateVPFD(vpfd)) continue;
+          const phases = buildPhasesFromVPFD(vpfd, forecast, now);
+          return { phases, mode: "vpfd3h", areaName,
+                   debug: { forecastReport, vpfdReport: vpfd.reportDateTime || null, vpfdCode: code } };
+        } catch (e) { /* 次の候補コードへ */ }
+      }
+      try {
+        const phases = buildPhasesFromForecast(forecast, now);
+        return { phases, mode: "pops6h", areaName,
+                 debug: { forecastReport, vpfdReport: null, vpfdCode: null } };
+      } catch (e) { /* 構造不一致 → デモへ */ }
+    }
+    const phases = buildPhasesFromForecast(mockForecast(now), now);
+    return { phases, mode: "demo", areaName: "デモ地方", debug: null };
+  }
+
+  function dedupe(arr) { return [...new Set(arr.filter(Boolean))]; }
+
+  async function loadAreaList(fetchFn) {
+    const f = fetchFn || (typeof fetch !== "undefined" ? fetch.bind(globalThis) : null);
+    if (!f) return null;
+    try {
+      const res = await f(AREA_URL);
+      if (!res.ok) return null;
+      return await res.json(); // {centers, offices, class10s, ...}
+    } catch (e) { return null; }
+  }
+
+  const api = {
+    FORECAST_URL, AREA_URL, VPFD_URL, DEFAULT_AREA,
+    categoryFromCode, weightsFromText, weightsFromVPFDWeather, applySecondaryWeights, TUNING, dominantOf,
+    popsAt, popsForRange, dailyWeatherAt, tempsAt, sameJstDate,
+    buildPhasesFromForecast, buildPhasesFromVPFD, validateVPFD, rangeLabel,
+    mockForecast, mockVPFD, loadPhases, loadAreaList,
+  };
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  else global.WMWeather = api;
+})(typeof window !== "undefined" ? window : globalThis);
+</script>
+<script>
+/* ============================================================
+ * main.js(モジュール分割: 1ファイル内に logic / weather / main を保持)
+ * ============================================================ */
+/* =========================================================================
+ * Weather Match — main.js
+ * 描画、入力処理、演出(光の粒・スキル発動パルス/ライン・タイムラプス遷移)、
+ * 効果音(Web Audio合成)、エリア選択、エンディング画面。
+ * ========================================================================= */
+(function () {
+  "use strict";
+  const L = window.WMLogic, W = window.WMWeather;
+  const $ = (s) => document.querySelector(s);
+
+  /* ---------------- 永続化(localStorage不可環境では自動でメモリに退避) ---------------- */
+  const store = (() => {
+    let mem = {};
+    let ok = false;
+    try {
+      const k = "__wm_probe__";
+      window.localStorage.setItem(k, "1");
+      window.localStorage.removeItem(k);
+      ok = true;
+    } catch (e) { ok = false; }
+    return {
+      get: (k, d) => {
+        try { if (ok) { const v = window.localStorage.getItem(k); return v == null ? d : JSON.parse(v); } } catch (e) {}
+        return k in mem ? mem[k] : d;
+      },
+      set: (k, v) => {
+        try { if (ok) { window.localStorage.setItem(k, JSON.stringify(v)); return; } } catch (e) {}
+        mem[k] = v;
+      },
+      persistent: ok,
+    };
+  })();
+
+  const reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------------- 効果音(Web Audio合成・音声ファイル不使用) ----------------
+   * 音だけでも「どの天気が消えたか」判別できるよう音色を明確に分ける。
+   * 効果音なしでも体験が成立する設計(音は強化要素)。 */
+  const Sound = (() => {
+    let ctx = null;
+    let muted = store.get("wm.muted", false);
+    let volume = store.get("wm.volume", 0.7);
+    function ac() {
+      if (!ctx) { const AC = window.AudioContext || window.webkitAudioContext; if (AC) ctx = new AC(); }
+      if (ctx && ctx.state === "suspended") ctx.resume();
+      return ctx;
+    }
+    function out(t0, dur) {
+      const c = ac(); if (!c) return null;
+      const g = c.createGain();
+      g.gain.value = 0;
+      g.connect(c.destination);
+      return g;
+    }
+    function tone(freq, dur, type, gain, t0off = 0, slideTo = null) {
+      const c = ac(); if (!c || muted) return;
+      const t0 = c.currentTime + t0off;
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = type; o.frequency.setValueAtTime(freq, t0);
+      if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(30, slideTo), t0 + dur);
+      const v = gain * volume;
+      g.gain.setValueAtTime(0, t0);
+      g.gain.linearRampToValueAtTime(v, t0 + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      o.connect(g); g.connect(c.destination);
+      o.start(t0); o.stop(t0 + dur + 0.05);
+    }
+    function noise(dur, gain, filterFreq, t0off = 0, slideTo = null) {
+      const c = ac(); if (!c || muted) return;
+      const t0 = c.currentTime + t0off;
+      const len = Math.ceil(c.sampleRate * dur);
+      const buf = c.createBuffer(1, len, c.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      const src = c.createBufferSource(); src.buffer = buf;
+      const f = c.createBiquadFilter(); f.type = "bandpass"; f.frequency.setValueAtTime(filterFreq, t0);
+      if (slideTo) f.frequency.exponentialRampToValueAtTime(slideTo, t0 + dur);
+      const g = c.createGain();
+      const v = gain * volume;
+      g.gain.setValueAtTime(v, t0);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      src.connect(f); f.connect(g); g.connect(c.destination);
+      src.start(t0); src.stop(t0 + dur);
+    }
+    /* 基本マージ音: 天気ごとに固有音色 */
+    const mergeSounds = {
+      sun:   (p) => { tone(880 * p, 0.14, "triangle", 0.25); tone(1318 * p, 0.18, "triangle", 0.18, 0.05); },       // 軽やかで高め
+      cloud: (p) => { tone(392 * p, 0.22, "sine", 0.28); tone(494 * p, 0.2, "sine", 0.12, 0.03); },                 // やわらかい中音
+      rain:  (p) => { tone(900 * p, 0.16, "sine", 0.26, 0, 260); noise(0.08, 0.10, 2400, 0.02, 700); },             // 水滴
+      snow:  (p) => { tone(1568 * p, 0.3, "sine", 0.2); tone(2093 * p, 0.26, "sine", 0.12, 0.02); },                // 硬質で澄んだ音
+      heat:  () => { tone(523, 0.5, "sawtooth", 0.16, 0, 1046); tone(659, 0.5, "triangle", 0.16, 0.06, 1318); tone(784, 0.55, "triangle", 0.16, 0.12, 1568); }, // 全消去の高揚
+      cold:  () => { tone(1244, 0.5, "sine", 0.2, 0, 311); tone(1864, 0.6, "sine", 0.14, 0.08, 466); },              // 降りてくる冷気
+      drop:  () => { noise(0.35, 0.28, 900, 0, 200); tone(600, 0.35, "sine", 0.24, 0.02, 120); },                    // 大きな水しぶき
+      bolt:  () => { noise(0.22, 0.34, 3200, 0, 500); tone(90, 0.4, "square", 0.2, 0.03, 45); },                     // 雷鳴
+    };
+    return {
+      merge(type, streak) {
+        const c = ac(); if (!c || muted) return;
+        const p = Math.min(2.2, Math.pow(2, Math.min(streak - 1, 8) / 12)); // コンボで半音ずつ上がる
+        (mergeSounds[type] || mergeSounds.cloud)(p);
+        // コンボ3以上: 光の粒と連動して音の重なりが増える
+        if (streak >= 3) {
+          const warm = (type === "sun" || type === "heat");
+          const base = warm ? [1046, 1318, 1568] : [740, 880, 1046]; // 暖色=明るく弾む / 寒色=滴るような重なり
+          for (let i = 0; i < Math.min(streak - 2, 4); i++) {
+            if (warm) tone(base[i % 3] * p, 0.12, "triangle", 0.1, 0.08 + i * 0.05);
+            else tone(base[i % 3] * p, 0.14, "sine", 0.1, 0.08 + i * 0.06, base[i % 3] * p * 0.6);
+          }
+        }
+      },
+      chance(type) { const f = mergeSounds[type]; if (f) f(1); },
+      phase() { noise(0.4, 0.14, 500, 0, 2000); tone(660, 0.12, "sine", 0.14, 0.28); }, // 時間が進む
+      ending() {
+        const seq = [523, 659, 784, 1046];
+        seq.forEach((f, i) => { tone(f, 1.1 - i * 0.1, "sine", 0.14, i * 0.16); tone(f * 2, 0.8, "sine", 0.05, i * 0.16); });
+      },
+      select() { tone(660, 0.06, "sine", 0.08); },
+      deny() { tone(196, 0.12, "sine", 0.12); },
+      rescueSnd() { tone(440, 0.3, "sine", 0.14, 0, 660); tone(660, 0.3, "sine", 0.12, 0.18, 880); },
+      get muted() { return muted; },
+      set muted(v) { muted = v; store.set("wm.muted", v); },
+      get volume() { return volume; },
+      set volume(v) { volume = v; store.set("wm.volume", v); },
+      unlock() { ac(); },
+    };
+  })();
+
+  /* ---------------- 表示定義 ---------------- */
+  const GLYPH = { sun: "☀️", cloud: "☁️", rain: "☂️", snow: "❄️", heat: "🔥", cold: "🧊", drop: "💧", bolt: "⚡️" };
+  const NAME = { sun: "晴れ", cloud: "くもり", rain: "雨", snow: "雪", heat: "灼熱", cold: "極寒", drop: "高降水", bolt: "雷" };
+  // コンボ演出色: 暖色(晴れ系)/寒色(雨系)
+  const PARTICLE = {
+    sun: ["#FFD97A", "#FFB35C", "#FFF3C4"], heat: ["#FF9E5C", "#FFD97A", "#FF7A5C"],
+    cloud: ["#DCE3EC", "#B9C4D4", "#F2F5F9"],
+    rain: ["#7FB4E6", "#4E8FD1", "#BCD9F2"], drop: ["#4E8FD1", "#7FB4E6", "#2E6FB0"],
+    snow: ["#DFF0FA", "#B8DCF0", "#FFFFFF"], cold: ["#B8DCF0", "#E6F4FC", "#8FC6E8"],
+    bolt: ["#FFE99A", "#CBB3FF", "#FFF"],
+  };
+  // 空の色(降水確率→背景トーン): 「今日はなんとなく暗め」を盤面全体で伝える
+  function skyFor(ph) {
+    if (!ph) return ["#79B7F0", "#F0F7FB", false];
+    if ((ph.weights.snow || 0) >= 0.3) return ["#9FB9CE", "#EDF4F9", false];
+    const p = ph.pops == null ? 30 : ph.pops;
+    // フェーズ切替が体感できるよう各段の色差を広めに取る
+    if (p >= 80) return ["#333E52", "#75819A", true];
+    if (p >= 60) return ["#55688A", "#A3AFC2", true];
+    if (p >= 30) return ["#85A0C6", "#D6DEE9", false];
+    return ["#79B7F0", "#F0F7FB", false];
+  }
+  // 雲アイテムの3段階グラデーション(🤍→🩶→暗いグレー)
+  function cloudTier(ph) {
+    const p = ph && ph.pops != null ? ph.pops : 30;
+    return p >= 60 ? 2 : p >= 30 ? 1 : 0;
+  }
+
+  /* ---------------- ゲーム全体状態 ---------------- */
+  let st = null;            // logic状態
+  let phaseMeta = null;     // {mode, areaName}
+  let areaCode = store.get("wm.area", W.DEFAULT_AREA);
+  let areaName = store.get("wm.areaName", "東京都");
+  let selected = -1;
+  let busy = false;         // アニメーション中の入力抑止
+  let startedAt = null;
+  let blockHintShown = { wet: false, ice: false };
+  const tileEls = new Map(); // item object -> element
+
+  /* ---------------- 起動 ---------------- */
+  async function boot() {
+    $("#areaBtn").textContent = areaName + " ▾";
+    setStatus("予報を取得中…");
+    const now = new Date();
+    startedAt = now;
+    let result;
+    try {
+      result = await W.loadPhases(areaCode, now);
+    } catch (e) {
+      result = { phases: W.buildPhasesFromForecast(W.mockForecast(now), now), mode: "demo", areaName: "デモ地方" };
+    }
+    phaseMeta = result;
+    // 診断情報: 「--%」等の調査用。発表切替の隙間(5/11/17時前後)の検出に使う
+    window.WMDebug = {
+      mode: result.mode,
+      areaCode,
+      debug: result.debug || null,
+      phases: result.phases.map((p) => ({ label: p.label, pops: p.pops, dominant: p.dominant, temp: p.temp, tempMax: p.tempMax, tempMin: p.tempMin })),
+    };
+    console.info("Weather Match:", JSON.stringify(window.WMDebug));
+    st = L.createState(result.phases);
+    selected = -1; busy = false;
+    blockHintShown = { wet: false, ice: false };
+    tileEls.clear();
+    $("#tiles").innerHTML = "";
+    $("#ending").hidden = true;
+    renderAll(true);
+    setStatus("");
+    let hintDelay = 0;
+    if (!store.get("wm.tutorial", false)) {
+      showToast("同じ天気を重ねて消し、時間を進めよう", "tutorial", 3000);
+      store.set("wm.tutorial", true);
+      hintDelay = 3200; // チュートリアル表示と重ならないよう遅延
+    }
+    const bootBlocks = Object.values(st.blocked).map((b) => b.kind);
+    setTimeout(() => { for (const k of bootBlocks) maybeBlockHint(k); }, hintDelay);
+    if (!L.anyValidMove(st)) handleRescue(L.rescue(st));
+  }
+
+  function setStatus(t) { $("#status").textContent = t; $("#status").hidden = !t; }
+
+  /* ---------------- 描画 ---------------- */
+  const boardEl = () => $("#board");
+  function cellSize() { return boardEl().clientWidth / st.w; }
+  function posOf(i) {
+    const s = cellSize();
+    const [x, y] = L.xy(i, st.w);
+    return [x * s, y * s];
+  }
+
+  function renderAll(initial) {
+    renderSky();
+    renderPhaseBar();
+    renderHud();
+    renderCells();
+    renderTiles(initial);
+  }
+
+  function renderSky() {
+    const ph = L.currentPhase(st);
+    const [top, bottom, dark] = skyFor(ph);
+    document.documentElement.style.setProperty("--sky-top", top);
+    document.documentElement.style.setProperty("--sky-bottom", bottom);
+    document.body.classList.toggle("dark-sky", dark);
+  }
+
+  function renderPhaseBar() {
+    const ph = L.currentPhase(st);
+    $("#phaseTime").textContent = ph.label;
+    const popsEl = $("#phasePops");
+    popsEl.textContent = ph.pops == null ? "--%" : ph.pops + "%";
+    popsEl.title = ph.pops == null ? "この時間帯の降水確率は公式値が未提供です(予報の発表切替直後など)" : "";
+    const parts = [];
+    if (ph.weatherText) parts.push(shorten(ph.weatherText, 14));
+    $("#phaseText").textContent = parts.join(" ");
+    const t = [];
+    if (typeof ph.temp === "number") t.push(`${ph.temp}°`);
+    else {
+      if (ph.tempMax != null) t.push(`最高${ph.tempMax}°`);
+      if (ph.tempMin != null) t.push(`最低${ph.tempMin}°`);
+    }
+    $("#phaseTemp").textContent = t.join(" / ") || "--";
+    // フェーズ進捗ドット
+    const dots = st.phases.map((_, i) => {
+      const cls = i < st.phaseIndex ? "done" : i === st.phaseIndex ? "now" : "";
+      return `<span class="dot ${cls}"></span>`;
+    }).join("");
+    $("#phaseDots").innerHTML = dots;
+    // ノルマ
+    const q = [];
+    for (let i = 0; i < st.quotaPerPhase; i++) q.push(`<span class="q ${i < st.quotaProgress ? "filled" : ""}"></span>`);
+    $("#quota").innerHTML = q.join("");
+    // データソースバッジ
+    const badge = phaseMeta.mode === "vpfd3h" ? "地域時系列予報 · 3時間"
+      : phaseMeta.mode === "pops6h" ? "府県天気予報 · 6時間"
+      : "デモデータ(予報取得失敗)";
+    const b = $("#srcBadge");
+    b.textContent = badge;
+    b.classList.toggle("demo", phaseMeta.mode === "demo");
+  }
+
+  function shorten(s, n) { return s.length > n ? s.slice(0, n) + "…" : s; }
+
+  function renderHud() {
+    $("#moves").textContent = st.moveCount;
+    // 次の出現予告(内容が変わったときだけ描画し、先頭チップを弾ませる)
+    const q = st.spawnQueue || [];
+    const tier = cloudTier(L.currentPhase(st));
+    const nq = $("#nextQueue");
+    const sig = q.join(",") + "|" + tier;
+    if (nq.dataset.sig !== sig) {
+      nq.dataset.sig = sig;
+      nq.innerHTML = q.map((t, i) =>
+        `<span class="next-chip nc-${t}${t === "cloud" && tier ? ` nc-cloud-${tier}` : ""}${!reducedMotion && i === 0 ? " bump" : ""}" aria-label="${NAME[t]}">${GLYPH[t]}</span>`
+      ).join("");
+    }
+    const c = $("#combo");
+    if (st.comboStreak >= 2) { c.textContent = `コンボ ×${st.comboStreak}`; c.hidden = false; }
+    else c.hidden = true;
+  }
+
+  function renderCells() {
+    const b = boardEl();
+    let grid = $("#cells");
+    if (!grid) {
+      grid = document.createElement("div");
+      grid.id = "cells";
+      b.appendChild(grid);
+      for (let i = 0; i < st.w * st.h; i++) {
+        const d = document.createElement("div");
+        d.className = "cell";
+        d.dataset.idx = i;
+        grid.appendChild(d);
+      }
+    }
+    grid.style.gridTemplateColumns = `repeat(${st.w}, 1fr)`;
+    [...grid.children].forEach((d, i) => {
+      const bl = st.blocked[i];
+      d.classList.toggle("wet", !!bl && bl.kind === "wet");
+      d.classList.toggle("ice", !!bl && bl.kind === "ice");
+      d.classList.remove("target", "target-merge", "selected-cell");
+    });
+  }
+
+  function renderTiles(initial) {
+    const layer = $("#tiles");
+    const seen = new Set();
+    const tier = cloudTier(L.currentPhase(st));
+    for (let i = 0; i < st.cells.length; i++) {
+      const item = st.cells[i];
+      if (!item) continue;
+      seen.add(item);
+      let el = tileEls.get(item);
+      if (!el) {
+        el = document.createElement("div");
+        el.className = "tile t-" + item.type;
+        el.innerHTML = `<span class="glyph">${GLYPH[item.type]}</span>`;
+        el.setAttribute("role", "button");
+        el.setAttribute("aria-label", NAME[item.type]);
+        layer.appendChild(el);
+        tileEls.set(item, el);
+        if (!initial && !reducedMotion) {
+          el.classList.add("spawn");
+          setTimeout(() => el.classList.remove("spawn"), 350);
+        }
+      }
+      el.classList.toggle("cloud-1", item.type === "cloud" && tier === 1);
+      el.classList.toggle("cloud-2", item.type === "cloud" && tier === 2);
+      const [x, y] = posOf(i);
+      el.style.width = el.style.height = cellSize() + "px";
+      el.style.transform = `translate(${x}px, ${y}px)`;
+      el.dataset.idx = i;
+    }
+    for (const [item, el] of [...tileEls]) {
+      if (!seen.has(item)) { el.remove(); tileEls.delete(item); }
+    }
+  }
+
+  /* ---------------- 入力 ---------------- */
+  function onBoardTap(e) {
+    if (busy || !st || st.ended) return;
+    Sound.unlock();
+    const rect = boardEl().getBoundingClientRect();
+    const x = Math.floor((e.clientX - rect.left) / cellSize());
+    const y = Math.floor((e.clientY - rect.top) / cellSize());
+    if (x < 0 || y < 0 || x >= st.w || y >= st.h) return;
+    const i = L.idx(x, y, st.w);
+    if (selected < 0) {
+      if (st.cells[i]) selectTile(i);
+      return;
+    }
+    if (i === selected) { clearSelection(); return; }
+    const targets = L.validTargets(st, selected);
+    const t = targets.find((v) => v.to === i);
+    if (t) { playMove(selected, i); }
+    else if (st.cells[i]) { selectTile(i); }
+    else { Sound.deny(); clearSelection(); }
+  }
+
+  function selectTile(i) {
+    clearSelection();
+    selected = i;
+    Sound.select();
+    const item = st.cells[i];
+    const el = tileEls.get(item);
+    if (el) el.classList.add("selected");
+    for (const t of L.validTargets(st, i)) {
+      const cell = $("#cells").children[t.to];
+      cell.classList.add(t.kind === "merge" ? "target-merge" : "target");
+    }
+  }
+  function clearSelection() {
+    if (selected >= 0) {
+      const item = st.cells[selected];
+      const el = item && tileEls.get(item);
+      if (el) el.classList.remove("selected");
+    }
+    selected = -1;
+    [...$("#cells").children].forEach((d) => d.classList.remove("target", "target-merge"));
+  }
+
+  /* ---------------- 1手の実行と演出 ---------------- */
+  function playMove(from, to) {
+    busy = true;
+    const mover = st.cells[from];
+    // 消える可能性のある要素を先にスナップショット
+    const snapshot = st.cells.map((it) => (it ? tileEls.get(it) : null));
+    const r = L.applyMove(st, from, to);
+    clearSelection();
+    if (!r.ok) { busy = false; return; }
+
+    // 移動アニメーション
+    const el = tileEls.get(mover);
+    const [tx, ty] = posOf(to);
+    if (el) el.style.transform = `translate(${tx}px, ${ty}px)`;
+
+    const moveDur = reducedMotion ? 0 : 140;
+    setTimeout(() => {
+      if (r.cleared.length) {
+        // マージ演出
+        const domType = mover.type;
+        Sound.merge(domType, st.comboStreak);
+        for (const ci of r.cleared) {
+          const cel = snapshot[ci] || (ci === to ? el : null);
+          if (cel) {
+            cel.classList.add("pop");
+            setTimeout(() => { cel.remove(); }, reducedMotion ? 0 : 260);
+          }
+        }
+        // 移動タイル自身も同調消滅のpopを付ける(重ねマージ時の取り残し防止)
+        if (el && !el.classList.contains("pop")) {
+          el.classList.add("pop");
+          setTimeout(() => { el.remove(); }, reducedMotion ? 0 : 260);
+        }
+        tileEls.delete(mover);
+        const [px, py] = posOf(to);
+        const cx = px + cellSize() / 2, cy = py + cellSize() / 2;
+        emitParticles(cx, cy, domType, st.comboStreak, r.pairs);
+        // 天候スキル演出(粒とは別レイヤー)
+        if (r.skillEffect) {
+          const [tx2, ty2] = L.xy(to, st.w);
+          if (r.skillEffect.type === "sun") emitPulse(cx, cy);
+          else if (r.skillEffect.type === "rain") emitBeam("v", tx2);
+          else if (r.skillEffect.type === "snow") emitBeam("h", ty2);
+          for (const th of r.skillEffect.thawed || []) {
+            const [bx, by] = posOf(th.idx);
+            emitParticles(bx + cellSize() / 2, by + cellSize() / 2, "sun", 1, 1);
+          }
+        }
+        if (r.chain) showToast(`連鎖 ×${r.pairs}!`, "chain");
+        if (r.chanceEffect) {
+          Sound.chance(r.chanceEffect.type);
+          boardFlash(r.chanceEffect.type);
+        }
+      }
+      renderHud();
+      renderPhaseBar();
+      setTimeout(() => finishTurn(), reducedMotion ? 0 : (r.cleared.length ? 240 : 40));
+    }, moveDur);
+  }
+
+  const TIMELAPSE_MS = 720; // フェーズ切替の遷移時間(タイル・空・バナーを同期)
+  let timelapseTimer = 0;
+  function finishTurn() {
+    const ev = L.endTurn(st);
+    if (ev.ended) { renderAll(); showEnding(); busy = false; return; }
+    const proceed = () => {
+      renderAll();
+      for (const b of ev.blockedNew || []) maybeBlockHint(b.kind);
+      if (ev.rescue) handleRescue(ev.rescue);
+      busy = false;
+    };
+    if (ev.phaseAdvanced) {
+      // 音・バナー・タイル遷移・空の変化を同一タイミングで開始する
+      Sound.phase();
+      showTimeBanner(L.currentPhase(st).label);
+      if (!reducedMotion) {
+        const board = boardEl();
+        clearTimeout(timelapseTimer);
+        board.classList.add("board-timelapse", "phase-shift"); // タイルがゆっくり大きく流れる
+        document.body.classList.add("sky-quick");              // 空の遷移をタイルと同じ速度に
+        document.body.classList.remove("sky-wash");
+        void document.body.offsetWidth;                        // アニメーション再発火
+        document.body.classList.add("sky-wash");               // 新しい空色の一瞬の強調ウォッシュ
+        renderAll();                                           // 新transform適用 → 0.72sで流れる
+        for (const b of ev.blockedNew || []) maybeBlockHint(b.kind);
+        timelapseTimer = setTimeout(() => {
+          board.classList.remove("board-timelapse", "phase-shift");
+          document.body.classList.remove("sky-quick", "sky-wash");
+          if (ev.rescue) handleRescue(ev.rescue);
+          busy = false;
+        }, TIMELAPSE_MS + 80);
+        return;
+      }
+    }
+    proceed();
+  }
+
+  /* フェーズ切替時、新しい時間帯ラベルを画面中央に一瞬大きく表示 */
+  let bannerTimer = 0;
+  function showTimeBanner(label) {
+    if (reducedMotion) return; // 演出省略(テキストは即時切替のみ)
+    const b = $("#timeBanner");
+    b.textContent = label;
+    b.classList.remove("run");
+    void b.offsetWidth; // 多重発火時もアニメーションを最初から
+    b.classList.add("run");
+    clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(() => b.classList.remove("run"), 1000);
+  }
+
+  function maybeBlockHint(kind) {
+    if (blockHintShown[kind]) return;
+    blockHintShown[kind] = true;
+    showToast(kind === "wet" ? "濡れマス発生 — 水が引くまで移動できません" : "凍結マス発生 — 溶けるまで移動できません", "rescue");
+  }
+
+  function handleRescue(ev) {
+    if (ev.thawed) showToast("行き止まり解消: マスの氷と水が引きました", "rescue");
+    if (ev.forcedMerge) showToast(`手詰まり救済: ${NAME[ev.forcedMerge.type]}を自動マージ`, "rescue");
+    Sound.rescueSnd();
+    renderAll();
+  }
+
+  /* ---------------- 光の粒 + スキル発動レイヤー(Canvas) ---------------- */
+  const particles = [];
+  const rings = [];   // ☀️ 円形パルス
+  const beams = [];   // 🌧️/❄️ 縦横の光ライン
+  let particleRAF = 0;
+  function startFxLoop() { if (!particleRAF) particleLoop(); }
+
+  /* ☀️ sun発動: 着地マス中心の光のパルス(二重リング) */
+  function emitPulse(x, y) {
+    if (reducedMotion) return;
+    const maxR = cellSize() * 1.8;
+    rings.push({ x, y, r: cellSize() * 0.2, maxR, life: 1, color: "#FFD97A", lw: 4 });
+    rings.push({ x, y, r: 0, maxR: maxR * 0.8, life: 1.25, color: "#FFF3C4", lw: 2.5 });
+    startFxLoop();
+  }
+
+  /* 🌧️/❄️ 発動: 該当列/行を走る光のライン */
+  function emitBeam(axis, index) {
+    if (reducedMotion) return;
+    const cs = cellSize();
+    beams.push({
+      axis,                       // "v"=縦(rain) / "h"=横(snow)
+      center: (index + 0.5) * cs, // 列/行の中心px
+      width: cs * 0.72,
+      progress: 0, life: 1,
+      color: axis === "v" ? "127,180,230" : "223,240,250",
+      core: axis === "v" ? "#EAF6FF" : "#FFFFFF",
+    });
+    startFxLoop();
+  }
+  function emitParticles(x, y, type, streak, pairs) {
+    if (reducedMotion) return;
+    const canvas = $("#fx");
+    const colors = PARTICLE[type] || PARTICLE.cloud;
+    const warm = (type === "sun" || type === "heat");
+    // コンボ数・連鎖ペア数に比例して粒の数と広がりが増大
+    const n = Math.min(90, 12 + streak * 8 + (pairs - 1) * 18);
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = (1 + Math.random() * 2.4) * (1 + Math.min(streak, 6) * 0.15);
+      particles.push({
+        x, y,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp - (warm ? 1.2 : -0.4), // 暖色=弾ける放出 / 寒色=雫のように滴る
+        g: warm ? 0.04 : 0.12,
+        r: 1.5 + Math.random() * 2.5,
+        life: 1,
+        decay: 0.012 + Math.random() * 0.02,
+        c: colors[i % colors.length],
+      });
+    }
+    startFxLoop();
+  }
+  function particleLoop() {
+    const canvas = $("#fx");
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (canvas.width !== w * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    // スキル: 光のライン(粒とは別レイヤーとして下に敷く)
+    for (let i = beams.length - 1; i >= 0; i--) {
+      const b = beams[i];
+      b.progress += 0.075;
+      if (b.progress > 1) b.life -= 0.09;
+      if (b.life <= 0) { beams.splice(i, 1); continue; }
+      const len = b.axis === "v" ? h : w;
+      const head = Math.min(1, b.progress) * len;
+      ctx.save();
+      if (b.axis === "h") { ctx.translate(0, b.center); }
+      else { ctx.translate(b.center, 0); ctx.rotate(Math.PI / 2); ctx.translate(0, 0); }
+      // 全長のソフトバー
+      ctx.globalAlpha = 0.30 * b.life;
+      const bar = ctx.createLinearGradient(0, -b.width / 2, 0, b.width / 2);
+      bar.addColorStop(0, "rgba(" + b.color + ",0)");
+      bar.addColorStop(0.5, "rgba(" + b.color + ",0.9)");
+      bar.addColorStop(1, "rgba(" + b.color + ",0)");
+      ctx.fillStyle = bar;
+      ctx.fillRect(0, -b.width / 2, len, b.width);
+      // 先頭の輝点(走る光)
+      ctx.globalAlpha = 0.9 * b.life;
+      const gl = ctx.createRadialGradient(head, 0, 0, head, 0, b.width * 1.1);
+      gl.addColorStop(0, b.core);
+      gl.addColorStop(0.4, "rgba(" + b.color + ",0.85)");
+      gl.addColorStop(1, "rgba(" + b.color + ",0)");
+      ctx.fillStyle = gl;
+      ctx.fillRect(head - b.width * 1.2, -b.width, b.width * 2.4, b.width * 2);
+      ctx.restore();
+    }
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx; p.y += p.vy; p.vy += p.g; p.life -= p.decay;
+      if (p.life <= 0) { particles.splice(i, 1); continue; }
+      ctx.globalAlpha = Math.max(0, p.life);
+      ctx.fillStyle = p.c;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r * p.life + 0.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // ☀️ 円形パルス(最前面)
+    for (let i = rings.length - 1; i >= 0; i--) {
+      const g = rings[i];
+      g.r += (g.maxR - g.r) * 0.16 + 1.2;
+      g.life -= 0.045;
+      if (g.life <= 0 || g.r >= g.maxR) { rings.splice(i, 1); continue; }
+      ctx.globalAlpha = Math.max(0, Math.min(1, g.life)) * 0.9;
+      ctx.strokeStyle = g.color;
+      ctx.lineWidth = g.lw * Math.max(0.3, g.life);
+      ctx.beginPath();
+      ctx.arc(g.x, g.y, g.r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    particleRAF = (particles.length || rings.length || beams.length) ? requestAnimationFrame(particleLoop) : 0;
+  }
+
+  function boardFlash(type) {
+    if (reducedMotion) return;
+    const f = $("#flash");
+    f.className = "flash-" + (type === "heat" ? "warm" : type === "bolt" ? "bolt" : "cool");
+    f.hidden = false;
+    setTimeout(() => { f.hidden = true; f.className = ""; }, 420);
+  }
+
+  let toastTimer = 0;
+  function showToast(text, kind, duration) {
+    const t = $("#toast");
+    t.textContent = text;
+    t.className = "show " + (kind || "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.className = ""; }, duration || 1600);
+  }
+
+  /* ---------------- エンディング ---------------- */
+  function showEnding() {
+    Sound.ending();
+    const stars = L.starRating(st);
+    $("#endStars").innerHTML = [1, 2, 3].map((i) => `<span class="star ${i <= stars ? "on" : ""}">★</span>`).join("");
+    const digest = L.weatherDigest(st.phases);
+    $("#endDigest").textContent = digest.join(" → ");
+    // 24時間タイムライン
+    $("#endTimeline").innerHTML = st.phases.map((p) => `
+      <div class="tl">
+        <span class="tl-time">${p.label}</span>
+        <span class="tl-glyph">${GLYPH[p.dominant] || "☁️"}</span>
+        <span class="tl-pops">${p.pops == null ? "--" : p.pops + "%"}</span>
+        <span class="tl-temp">${typeof p.temp === "number" ? p.temp + "°" : (p.tempMax != null ? p.tempMax + "°" : "--")}</span>
+      </div>`).join("");
+    $("#endStats").textContent =
+      `${st.moveCount}手 / マージ${st.mergeEvents} / 連鎖${st.chainCount} / 最大コンボ${st.maxCombo}` +
+      (st.rescueCount ? ` / 救済${st.rescueCount}` : "");
+    const d = startedAt;
+    const stamp = `${d.getFullYear()}.${d.getMonth() + 1}.${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    $("#endOnce").textContent = `${stamp} の${areaName}の予報 — この盤面はこの時刻にしか遊べません`;
+    $("#ending").hidden = false;
+  }
+
+  /* ---------------- エリア選択 ---------------- */
+  let areaData = null;
+  async function openAreaPicker() {
+    $("#areaModal").hidden = false;
+    const list = $("#areaList");
+    if (!areaData) {
+      list.innerHTML = `<p class="area-loading">エリア一覧を取得中…</p>`;
+      areaData = await W.loadAreaList();
+      if (!areaData) {
+        list.innerHTML = `<p class="area-loading">エリア一覧を取得できませんでした。<br>通信環境をご確認ください。</p>`;
+        return;
+      }
+    }
+    renderCenters();
+  }
+  function renderCenters() {
+    const list = $("#areaList");
+    $("#areaBack").hidden = true;
+    $("#areaTitle").textContent = "地方を選択";
+    list.innerHTML = "";
+    for (const [code, c] of Object.entries(areaData.centers)) {
+      const b = document.createElement("button");
+      b.className = "area-item";
+      b.textContent = c.name;
+      b.onclick = () => renderOffices(code);
+      list.appendChild(b);
+    }
+  }
+  function renderOffices(centerCode) {
+    const list = $("#areaList");
+    const center = areaData.centers[centerCode];
+    $("#areaBack").hidden = false;
+    $("#areaBack").onclick = renderCenters;
+    $("#areaTitle").textContent = center.name;
+    list.innerHTML = "";
+    for (const oc of center.children || []) {
+      const o = areaData.offices[oc];
+      if (!o) continue;
+      const b = document.createElement("button");
+      b.className = "area-item" + (oc === areaCode ? " current" : "");
+      b.textContent = o.name;
+      b.onclick = () => {
+        areaCode = oc;
+        areaName = o.name;
+        store.set("wm.area", oc);       // 次回起動時も保持
+        store.set("wm.areaName", o.name);
+        $("#areaModal").hidden = true;
+        $("#areaBtn").textContent = areaName + " ▾";
+        boot();                          // 新エリアで再計算
+      };
+      list.appendChild(b);
+    }
+  }
+
+  /* ---------------- イベント配線 ---------------- */
+  function wire() {
+    boardEl().addEventListener("pointerdown", onBoardTap);
+    $("#muteBtn").addEventListener("click", () => {
+      Sound.unlock();
+      Sound.muted = !Sound.muted;
+      updateMuteBtn();
+    });
+    $("#volume").addEventListener("input", (e) => { Sound.volume = +e.target.value / 100; });
+    $("#volume").value = Math.round(Sound.volume * 100);
+    updateMuteBtn();
+    $("#areaBtn").addEventListener("click", openAreaPicker);
+    $("#areaClose").addEventListener("click", () => { $("#areaModal").hidden = true; });
+    $("#replayBtn").addEventListener("click", () => boot());
+    window.addEventListener("resize", () => { if (st) renderTiles(true); });
+    if (!store.persistent) {
+      console.info("Weather Match: この環境では設定を保存できません(メモリ内のみ)。GitHub Pages等の通常ブラウザでは保存されます。");
+    }
+  }
+  function updateMuteBtn() {
+    $("#muteBtn").textContent = Sound.muted ? "🔇" : "🔊";
+    $("#muteBtn").setAttribute("aria-label", Sound.muted ? "ミュート解除" : "ミュート");
+    $("#volume").disabled = Sound.muted;
+  }
+
+  /* 調整・検証用の開発フック(盤面を直接観察/再描画できる。チート耐性は不要な1人用ゲーム) */
+  window.WMDev = {
+    getState: () => st,
+    rerender: () => renderAll(true),
+    logic: L, weather: W,
+  };
+
+  document.addEventListener("DOMContentLoaded", () => { wire(); boot(); });
+})();
+</script>
+</body>
+</html>
