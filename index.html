@@ -1029,7 +1029,10 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
    * 移動先が盤内かつ空きかつ非ブロックの駒だけ動く。自動マージはしない。 */
   function maybeWindDrift(st) {
     const w = currentPhase(st) && currentPhase(st).wind;
-    if (!w || !w.strength) { st.windCounter = 0; return null; }
+    // 穏やかな時間帯は計数を「一時停止」(リセットしない)。
+    // 3時間スロットの風速は閾値前後でゆらぐため、リセットすると
+    // 断続的な風の日に永遠に発火しなくなる
+    if (!w || !w.strength) { return null; }
     const interval = CONFIG.windInterval[w.strength] || 4;
     st.windCounter++;
     if (st.windCounter < interval) return null;
@@ -2008,7 +2011,8 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       mode: result.mode,
       areaCode,
       debug: result.debug || null,
-      phases: result.phases.map((p) => ({ label: p.label, pops: p.pops, dominant: p.dominant, temp: p.temp, tempMax: p.tempMax, tempMin: p.tempMin })),
+      phases: result.phases.map((p) => ({ label: p.label, pops: p.pops, dominant: p.dominant, temp: p.temp, tempMax: p.tempMax, tempMin: p.tempMin,
+        wind: p.wind ? `${p.wind.dirName}/強度${p.wind.strength}` : null })),
     };
     console.info("Weather Match:", JSON.stringify(window.WMDebug));
     st = L.createState(result.phases);
@@ -2384,6 +2388,11 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
         void document.body.offsetWidth;                        // アニメーション再発火
         document.body.classList.add("sky-wash");               // 新しい空色の一瞬の強調ウォッシュ
         renderAll();                                           // 新transform適用 → 0.72sで流れる
+        if (ev.wind) {
+          Sound.wind();
+          emitWindStreaks(ev.wind);
+          if (ev.wind.moved.length) maybeWindHint();
+        }
         for (const b of ev.blockedNew || []) maybeBlockHint(b.kind);
         timelapseTimer = setTimeout(() => {
           board.classList.remove("board-timelapse", "phase-shift");
