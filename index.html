@@ -52,14 +52,32 @@ body.sky-wash::after {
   background: linear-gradient(180deg, var(--sky-top), var(--sky-bottom));
   opacity: 0; animation: skyWash 0.72s ease-in-out;
 }
-@keyframes skyWash { 0% { opacity: 0; } 35% { opacity: 0.55; } 100% { opacity: 0; } }
+@keyframes skyWash { 0% { opacity: 0; } 30% { opacity: 0.75; } 100% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { body.sky-wash::after { animation: none; } }
 .app { width: min(94vw, 430px); display: flex; flex-direction: column; gap: 10px; }
 
 /* ---- ヘッダー ---- */
 header { display: flex; align-items: center; gap: 8px; padding: 2px 2px 0; }
-h1 { font-size: 15px; font-weight: 700; letter-spacing: 0.14em; }
-h1 small { display: block; font-size: 9px; font-weight: 400; letter-spacing: 0.28em; color: var(--ink-soft); }
+/* ロゴタイプ: 細いWEATHER × 太いMATCH、傾き+空色グラデーションで気流を表現 */
+h1.logo {
+  display: flex; align-items: baseline; gap: 7px;
+  font-family: "Avenir Next", "Futura", "Century Gothic", "Helvetica Neue", Arial, sans-serif;
+  font-style: italic; line-height: 1; user-select: none;
+}
+.logo-weather {
+  font-size: 17px; font-weight: 400; letter-spacing: 0.30em; color: var(--ink);
+  opacity: 0.85;
+}
+.logo-match {
+  font-size: 21px; font-weight: 800; letter-spacing: 0.10em;
+  background: linear-gradient(120deg, #2E6FB0 0%, #58A8E8 42%, #8FD0F5 58%, #2E6FB0 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  filter: drop-shadow(0 1px 1px rgba(38,49,63,0.18));
+}
+body.dark-sky .logo-match {
+  background: linear-gradient(120deg, #8FC6EF 0%, #C9E6FA 45%, #FFFFFF 60%, #8FC6EF 100%);
+  -webkit-background-clip: text; background-clip: text;
+}
 .spacer { flex: 1; }
 button { font-family: inherit; color: inherit; }
 .hbtn {
@@ -75,6 +93,7 @@ button { font-family: inherit; color: inherit; }
   background: var(--card); border: 1px solid var(--card-line); border-radius: var(--radius);
   padding: 12px 16px 10px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
 }
+.phase-date { font-size: 11px; color: var(--ink-soft); letter-spacing: 0.12em; margin-bottom: 2px; font-variant-numeric: tabular-nums; }
 .phase-top { display: flex; align-items: baseline; gap: 10px; }
 #phaseTime {
   font-size: 30px; font-weight: 700; letter-spacing: 0.02em;
@@ -108,7 +127,10 @@ body.dark-sky #srcBadge.demo { color: #FFB98A; }
   touch-action: manipulation;
 }
 #board.phase-shift { animation: boardPulse 0.8s ease; }
-@keyframes boardPulse { 30% { box-shadow: 0 0 0 4px rgba(46,111,176,0.25); } }
+@keyframes boardPulse {
+  25% { box-shadow: 0 0 0 6px rgba(46,111,176,0.35), 0 0 44px rgba(255,255,255,0.5); scale: 0.985; }
+  60% { scale: 1.004; }
+}
 #cells { position: absolute; inset: 0; display: grid; }
 .cell { border: 0.5px solid var(--card-line); position: relative; transition: background 0.3s; }
 .cell.target { background: rgba(46, 111, 176, 0.14); }
@@ -120,6 +142,11 @@ body.dark-sky #srcBadge.demo { color: #FFB98A; }
 .cell.target-merge::after {
   content: "＋"; position: absolute; inset: 0; display: grid; place-items: center;
   color: var(--accent); font-weight: 700; font-size: 18px;
+}
+.cell.trail { background: rgba(46, 111, 176, 0.07); }
+.cell.trail::after {
+  content: ""; position: absolute; inset: 44%; border-radius: 50%;
+  background: rgba(46, 111, 176, 0.28);
 }
 .cell.wet { background: var(--wet); }
 .cell.wet::before { content: "💧"; position: absolute; right: 3px; bottom: 2px; font-size: 10px; opacity: 0.8; }
@@ -200,7 +227,7 @@ body.dark-sky #combo { color: #9EC9F2; }
 @keyframes comboBeat { 40% { scale: 1.15; } }
 #status { font-size: 12px; color: var(--ink-soft); }
 #toast {
-  position: fixed; left: 50%; top: 18%; translate: -50% 0; z-index: 30;
+  position: fixed; left: 50%; top: 18%; translate: -50% 0; z-index: 50;
   background: var(--card); border: 1px solid var(--card-line); color: var(--ink);
   border-radius: 999px; padding: 9px 18px; font-size: 13px; font-weight: 700;
   opacity: 0; pointer-events: none; transition: opacity 0.25s, translate 0.25s;
@@ -210,15 +237,25 @@ body.dark-sky #combo { color: #9EC9F2; }
 #toast.chain { color: var(--accent); }
 #toast.rescue { color: #B05A2E; }
 #toast.tutorial { color: var(--accent); font-size: 14px; }
+#toast.dex { color: #B07A2E; }
+body.dark-sky #toast.dex { color: #FFD97A; }
 
 /* フェーズ切替の時刻バナー: 中央に大きく浮かび、#phaseTime表示へ収束するように消える */
 #timeBanner {
   position: fixed; left: 50%; top: 34%; translate: -50% -50%; z-index: 35;
-  font-size: 52px; font-weight: 700; letter-spacing: 0.03em;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  color: var(--ink); opacity: 0; pointer-events: none;
+}
+.banner-main {
+  font-size: 56px; font-weight: 700; letter-spacing: 0.03em;
   font-variant-numeric: tabular-nums;
   font-family: "Hiragino Kaku Gothic ProN", ui-monospace, monospace;
-  color: var(--ink); text-shadow: 0 2px 18px rgba(46,111,176,0.35), 0 0 2px var(--card);
-  opacity: 0; pointer-events: none;
+  text-shadow: 0 2px 22px rgba(46,111,176,0.45), 0 0 3px var(--card), 0 0 40px rgba(255,255,255,0.55);
+}
+.banner-sub {
+  font-size: 16px; font-weight: 700; letter-spacing: 0.14em; color: var(--ink);
+  background: var(--card); border: 1px solid var(--card-line); border-radius: 999px;
+  padding: 4px 16px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
 }
 #timeBanner.run { animation: bannerRun 0.95s ease-out forwards; }
 @keyframes bannerRun {
@@ -231,6 +268,7 @@ body.dark-sky #combo { color: #9EC9F2; }
 
 /* ---- フッター(一回性 + 出典) ---- */
 footer { font-size: 10px; color: var(--ink-soft); text-align: center; line-height: 1.7; padding-top: 2px; }
+footer .legend { font-weight: 700; letter-spacing: 0.02em; }
 footer .once { letter-spacing: 0.04em; }
 
 /* ---- オーバーレイ共通 ---- */
@@ -266,6 +304,25 @@ body.dark-sky .panel { background: rgba(22, 30, 42, 0.9); }
 }
 .end-note { font-size: 9.5px; color: var(--ink-soft); margin-top: 12px; }
 
+/* ---- 天気図鑑 ---- */
+#dexBtn { font-variant-numeric: tabular-nums; }
+.dex-head { display: flex; align-items: center; margin-bottom: 12px; }
+#dexTitle { font-size: 15px; font-weight: 700; flex: 1; text-align: center; }
+#dexGrid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.dex-card {
+  border: 1px solid var(--card-line); border-radius: 12px; padding: 10px 6px;
+  background: rgba(255,255,255,0.5); display: flex; flex-direction: column; gap: 4px;
+  align-items: center; text-align: center; min-height: 108px;
+}
+body.dark-sky .dex-card { background: rgba(255,255,255,0.08); }
+.dex-card.locked { opacity: 0.6; }
+.dex-glyph { font-size: 24px; line-height: 1.2; }
+.dex-card.locked .dex-glyph { color: var(--ink-soft); font-weight: 700; }
+.dex-name { font-size: 11.5px; font-weight: 700; }
+.dex-cond { font-size: 9px; color: var(--ink-soft); line-height: 1.5; }
+.dex-desc { font-size: 9px; color: var(--ink-soft); line-height: 1.5; }
+.dex-date { font-size: 8.5px; color: var(--ink-soft); margin-top: auto; opacity: 0.8; }
+
 /* ---- エリア選択 ---- */
 .area-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 #areaTitle { font-size: 15px; font-weight: 700; flex: 1; text-align: center; }
@@ -285,7 +342,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
 <body>
 <div class="app">
   <header>
-    <h1>ウェザー・マッチ<small>WEATHER MATCH</small></h1>
+    <h1 class="logo" aria-label="Weather Match"><span class="logo-weather">WEATHER</span><span class="logo-match">MATCH</span></h1>
     <span class="spacer"></span>
     <button id="areaBtn" class="hbtn" aria-label="予報エリアを変更">東京都 ▾</button>
     <button id="muteBtn" class="hbtn" aria-label="ミュート">🔊</button>
@@ -293,6 +350,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
   </header>
 
   <section class="phase-card" aria-live="polite">
+    <div id="phaseDate" class="phase-date">--月--日</div>
     <div class="phase-top">
       <span id="phaseTime">--:--</span>
       <span id="phaseText"></span>
@@ -320,12 +378,14 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     <span id="combo" hidden></span>
     <span class="spacer"></span>
     <span id="status" hidden></span>
+    <button id="dexBtn" class="hbtn" aria-label="天気図鑑を開く">図鑑</button>
   </div>
 
   <div id="toast" role="status"></div>
   <div id="timeBanner" aria-hidden="true"></div>
 
   <footer>
+    <div class="legend">うごき: ☀️縦横に滑走 / ☂️縦のみ / ❄️横のみ / ☁️と特殊駒は8方向に1歩(同じ天気は巻き込んで貫通)</div>
     <div class="once">「今日のウェザー・マッチ」— 実際の予報が題材のため、盤面は毎日・毎時変わります</div>
     <div>出典: 気象庁ホームページ(天気予報データを加工して利用) / 音が出ます(🔊で切替)</div>
   </footer>
@@ -340,6 +400,16 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     <div id="endOnce"></div>
     <button id="replayBtn" class="primary">最新の予報でもう一度</button>
     <div class="end-note">出典: 気象庁ホームページ(加工して利用)</div>
+  </div>
+</div>
+
+<div id="dexModal" class="overlay" hidden>
+  <div class="panel">
+    <div class="dex-head">
+      <span id="dexTitle">天気図鑑</span>
+      <button id="dexClose" class="area-nav">閉じる</button>
+    </div>
+    <div id="dexGrid"></div>
   </div>
 </div>
 
@@ -372,11 +442,12 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
   const CONFIG = {
     boardW: 6,
     boardH: 6,
-    initialItems: 8,          // 開始時に盤面へ配置するアイテム数
+    initialItems: 12,         // 開始時に盤面へ配置するアイテム数
     spawnPerTurn: 1,          // ターン終了時の新規出現数
-    phaseSeedItems: 3,        // フェーズ移行時、最下段の新規行に置くアイテム数(0〜boardW)
+    spawnExtraOnMerge: false, // trueならマージが成立したターンだけ出現+1(消すほど込み合う圧)
+    phaseSeedItems: 4,        // フェーズ移行時、最下段の新規行に置くアイテム数(0〜boardW)
     // ノルマ(マージ回数)。フェーズ数に応じて自動決定
-    quotaFor: (phaseCount) => (phaseCount >= 6 ? 2 : 4),
+    quotaFor: (phaseCount) => (phaseCount >= 6 ? 4 : 8),
     // チャンスアイテム閾値(Weather Drop値を確認するまでの仮値)
     heatTempMax: 35,          // 灼熱: tempMax >= 35(猛暑日)
     coldTempMax: 0,           // 極寒: tempMax <= 0(真冬日)
@@ -395,14 +466,19 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       { snow: 0.3, count: 2, duration: 3 },
     ],
     blockRespawnChance: 0.30, // 該当フェーズ中、毎ターン追加発生する確率(上限countまで)
-    // 天候スキル: 追加消去1マスあたりのノルマ加算量(仕様: すべて加算=1.0)
-    skillQuotaPerTile: 1,
+    // 天候スキル: 追加消去1マスあたりのノルマ加算量(2マスで+1。フェーズ飛ばし抑制)
+    skillQuotaPerTile: 0.5,
     // 次の出現予告: 先読みして表示する個数
     previewCount: 2,
+    // スライド移動: falseなら障害物/端まで滑る(強制スライド)。trueで経路途中も選択可
+    slideStopAnywhere: false,
+    // 貫通の巻き込み上限(1スライドで消せる同種の数)。0=無制限。
+    // 上限に達した場合、そのマスで停止する(それ以上は進まない)
+    sweepLimit: 0,
     // 連鎖ボーナス: 1手で pairs>=2 のとき
     chainMoveRefund: 1,       // 効率評価上、実質手数を pairs-1 だけ差し引く
-    // 効率評価(星): par = 総ノルマ × parFactor 手
-    parFactor: 2.4,
+    // 効率評価(星): par = 総ノルマ × parFactor 手(フェーズ数でモード別)
+    parFactorFor: (phaseCount) => (phaseCount >= 6 ? 1.3 : 1.5),
     star3: 1.0,               // moves <= par*1.0 → ★3
     star2: 1.5,               // moves <= par*1.5 → ★2
   };
@@ -456,6 +532,8 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       comboStreak: 0,                       // 連続マージ手数
       maxCombo: 0,
       rescueCount: 0,
+      skillsUsed: {},              // このプレイで発動したスキル種(図鑑用)
+      lastMovePairs: 0,            // 直前手のマージペア数(加圧スポーン判定用)
       ended: false,
     };
     seedInitialItems(st, CONFIG.initialItems);
@@ -520,17 +598,88 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     }
   }
 
-  /* ---------------- 移動先の妥当性 ---------------- */
-  /* 隣接1マスのみ。空きマス(非ブロック)へ移動 or 同種アイテムマスへマージ移動 */
+  /* ---------------- 移動先の妥当性(貫通スライド) ----------------
+   * アイテムは選んだ方向へ直線に滑る。**同じ天気は素通りしながら巻き込んで消し**、
+   * それ以外の障害物(盤端・濡れ/凍結マス・異種アイテム)で停止する。
+   * 経路途中では止まれない(強制スライド)。
+   * 濡れマス・凍結マスは「壁」として滑り止めに利用できる。
+   * ターゲット: to=停止マス, kind=merge(巻き込みあり)/move,
+   *   path=通過した空きマス(UI軌跡用), sweeps=巻き込んだ同種マス。
+   * UI/applyMoveは sweeps 内のマスをタップ先の別名として受け付ける。 */
+  const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const DIRS_V = [[0, 1], [0, -1]];
+  const DIRS_H = [[1, 0], [-1, 0]];
+  const DIRS_8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+
+  /* 駒ごとの動き(チェス式)。天気の性質=動きの性質:
+   * ☀️ 晴れ: 光はまっすぐ遠くへ → 縦横に滑走(貫通あり)
+   * ☂️ 雨 : 降るものは縦    → 縦方向のみ滑走(貫通あり)。縦ウォッシュと対応
+   * ❄️ 雪 : 風に流される    → 横方向のみ滑走(貫通あり)。横ブリザードと対応
+   * ☁️ くもり: 漂う          → 全8方向に1歩(斜めが使える代わりに遅い)
+   * チャンス4種: 全8方向に1歩 */
+  const MOVEMENT = {
+    sun:   { dirs: DIRS,   slide: true },
+    rain:  { dirs: DIRS_V, slide: true },
+    snow:  { dirs: DIRS_H, slide: true },
+    cloud: { dirs: DIRS_8, slide: false },
+    heat:  { dirs: DIRS_8, slide: false },
+    cold:  { dirs: DIRS_8, slide: false },
+    drop:  { dirs: DIRS_8, slide: false },
+    bolt:  { dirs: DIRS_8, slide: false },
+  };
+  const movementFor = (type) => MOVEMENT[type] || MOVEMENT.cloud;
+
   function validTargets(st, from) {
     const item = st.cells[from];
     if (!item || st.ended) return [];
     const out = [];
-    for (const n of neighbors(from, st.w, st.h)) {
-      if (st.blocked[n]) continue;                 // 濡れ/凍結マスへは移動不可
-      const occ = st.cells[n];
-      if (!occ) out.push({ to: n, kind: "move" });
-      else if (occ.type === item.type) out.push({ to: n, kind: "merge" });
+    const [fx, fy] = xy(from, st.w);
+    const spec = movementFor(item.type);
+    if (!spec.slide) {
+      // 1歩駒: 8方向いずれかへ1マス。同種の上へ乗れば同調マージ
+      for (const [dx, dy] of spec.dirs) {
+        const x = fx + dx, y = fy + dy;
+        if (x < 0 || y < 0 || x >= st.w || y >= st.h) continue;
+        const i = idx(x, y, st.w);
+        if (st.blocked[i]) continue;
+        const occ = st.cells[i];
+        if (!occ) out.push({ to: i, kind: "move", path: [], sweeps: [] });
+        else if (occ.type === item.type) out.push({ to: i, kind: "merge", path: [], sweeps: [i] });
+      }
+      return out;
+    }
+    for (const [dx, dy] of spec.dirs) {
+      let x = fx + dx, y = fy + dy;
+      let stop = -1;                 // 最終的な着地マス(空き or 最後に巻き込んだ同種マス)
+      const path = [];               // 通過した空きマス
+      const sweeps = [];             // 巻き込んだ同種マス
+      while (x >= 0 && y >= 0 && x < st.w && y < st.h) {
+        const i = idx(x, y, st.w);
+        if (st.blocked[i]) break;                      // 濡れ/凍結マス=壁
+        const occ = st.cells[i];
+        if (occ) {
+          if (occ.type !== item.type) break;           // 異種=壁
+          sweeps.push(i);                              // 同種=素通りで巻き込む
+          stop = i;
+          if (CONFIG.sweepLimit > 0 && sweeps.length >= CONFIG.sweepLimit) break; // 上限で停止
+        } else {
+          if (CONFIG.slideStopAnywhere) out.push({ to: i, kind: sweeps.length ? "merge" : "move", path: path.slice(), sweeps: sweeps.slice() });
+          path.push(i);
+          stop = i;
+        }
+        x += dx; y += dy;
+      }
+      if (stop < 0) continue;                          // その方向へは1マスも進めない
+      if (CONFIG.slideStopAnywhere) {
+        if (sweeps.length && st.cells[stop]) out.push({ to: stop, kind: "merge", path: path.slice(), sweeps: sweeps.slice() });
+        continue;
+      }
+      out.push({
+        to: stop,
+        kind: sweeps.length ? "merge" : "move",
+        path: path.filter((p) => p !== stop),
+        sweeps,
+      });
     }
     return out;
   }
@@ -541,23 +690,24 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
    */
   function applyMove(st, from, to) {
     const targets = validTargets(st, from);
-    const t = targets.find((v) => v.to === to);
+    // 停止マスだけでなく、巻き込み対象(sweeps)のタップも同じ手として受け付ける
+    const t = targets.find((v) => v.to === to || (v.sweeps && v.sweeps.includes(to)));
     if (!t) return { ok: false };
+    const dest = t.to;
     const item = st.cells[from];
     st.cells[from] = null;
 
-    // マージ相手の収集: 着地マスの占有(同種) + 着地マスの隣接同種
-    const partners = new Set();
-    const occ = st.cells[to];
-    if (occ && occ.type === item.type) partners.add(to);
-    for (const n of neighbors(to, st.w, st.h)) {
-      if (n === from) continue; // 元居たマスは今空
+    // マージ相手の収集: 経路上で巻き込んだ同種(sweeps) + 着地マスの隣接同種(連鎖)
+    const partners = new Set(t.sweeps || []);
+    for (const n of neighbors(dest, st.w, st.h)) {
       const c = st.cells[n];
       if (c && c.type === item.type) partners.add(n);
     }
 
-    st.cells[to] = item; // いったん着地
+    st.cells[dest] = item; // いったん着地(巻き込み対象の上でも可: 直後に同時消去)
+    to = dest;
     st.moveCount++;
+    st.lastMovePairs = partners.size;
 
     let cleared = [], pairs = 0, chanceEffect = null, skillEffect = null;
     if (partners.size > 0) {
@@ -571,6 +721,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       }
       // 天候スキル: 着地タイプに応じた追加効果(sun/rain/snowのみ。cloud・チャンスは無し)
       skillEffect = fireSkill(st, item.type, to);
+      if (skillEffect) st.skillsUsed[skillEffect.type] = true;
       let skillQuota = 0;
       if (skillEffect) {
         for (const i of skillEffect.cells) clearedSet.add(i);
@@ -593,6 +744,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     const quotaDone = st.quotaProgress >= st.quotaPerPhase;
     return {
       ok: true, from, to, cleared, pairs,
+      sweeps: t.sweeps || [], path: t.path || [],
       chain: pairs >= 2, chanceEffect, skillEffect,
       comboStreak: st.comboStreak, quotaDone,
     };
@@ -691,15 +843,21 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       advancePhase(st, ev);
     }
 
-    // 3) 新規出現: 予告キューの先頭から湧く(予告の正確性を保証)
-    const empties = emptyCells(st);
-    if (empties.length) {
+    // 3) 新規出現: 予告キューの先頭から順に湧く(予告の正確性を保証)
+    const spawnCount = CONFIG.spawnPerTurn +
+      (CONFIG.spawnExtraOnMerge && st.lastMovePairs > 0 ? 1 : 0);
+    ev.spawnedAll = [];
+    for (let k = 0; k < spawnCount; k++) {
+      const empties = emptyCells(st);
+      if (!empties.length) break; // 空き無し → 残りはスキップ(キューは消費しない=予告据え置き)
       const i = empties[Math.floor(st.rng() * empties.length)];
       const type = st.spawnQueue.length ? st.spawnQueue.shift() : rollType(st);
       st.cells[i] = { type };
-      ev.spawned = { idx: i, type };
+      ev.spawnedAll.push({ idx: i, type });
       fillSpawnQueue(st);
-    } // 空き無し → スキップ(キューは消費しない=予告は据え置き)
+    }
+    ev.spawned = ev.spawnedAll[0] || null;
+    st.lastMovePairs = 0;
 
     // 4) ブロック追加発生
     ev.blockedNew = maybeSpawnBlocks(st);
@@ -832,10 +990,70 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     return ev;
   }
 
+  /* ---------------- 天気図鑑 ----------------
+   * 解説文は気象庁の用語定義に基づく正確な記述のみ(推測は書かない) */
+  const DEX = [
+    { id: "sun",   name: "晴れ",       glyph: "☀️", cond: "☀️を同調させて消す", desc: "雲量2〜8の空。空の8割が雲でも「晴れ」。うごき: 縦横に滑走。" },
+    { id: "cloud", name: "くもり",     glyph: "☁️", cond: "☁️を同調させて消す", desc: "雲量9以上で降水現象がない状態。うごき: 8方向に1歩。" },
+    { id: "rain",  name: "雨",         glyph: "☂️", cond: "☂️を同調させて消す", desc: "直径0.5mm以上の水滴の降水。うごき: 縦に滑走(降るものは縦)。" },
+    { id: "snow",  name: "雪",         glyph: "❄️", cond: "❄️を同調させて消す", desc: "氷の結晶による降水。うごき: 横に滑走(風に流される)。" },
+    { id: "heat",  name: "猛暑日",     glyph: "🔥", cond: "🔥(最高気温35°C以上の日)を消す", desc: "最高気温35°C以上の日。2007年に正式な予報用語となった。" },
+    { id: "cold",  name: "真冬日",     glyph: "🧊", cond: "🧊(最高気温0°C以下等の日)を消す", desc: "最高気温が0°C未満の日。最低気温0°C未満は「冬日」。" },
+    { id: "drop",  name: "高い降水確率", glyph: "💧", cond: "💧(降水確率70%以上)を消す", desc: "降水確率は1mm以上の降水がある確率。雨の強さとは無関係。" },
+    { id: "bolt",  name: "雷",         glyph: "⚡️", cond: "⚡️(予報文に「雷」)を消す", desc: "積乱雲内で氷の粒がぶつかり合い電気が生まれる。「雷を伴う」は強い雨のサイン。" },
+    { id: "mixed", name: "雨または雪", glyph: "🌨️", cond: "「雨または雪」の時間帯がある日を最後まで遊ぶ", desc: "気温が雨雪の境目(おおむね2°C前後)のときの予報。時系列予報に現れるレア表記。" },
+    { id: "arate", name: "荒天",       glyph: "🌧️", cond: "降水確率80%以上の時間帯がある日を最後まで遊ぶ", desc: "降水確率80%は「ほぼ確実に降る」予報。傘は迷わず持つ。" },
+    { id: "kaisei", name: "晴れの一日", glyph: "🌞", cond: "全時間帯が晴れの日を最後まで遊ぶ", desc: "雲量1以下なら「快晴」。天気図では二重丸で表す。" },
+    { id: "utsurigi", name: "移ろう空", glyph: "🌦️", cond: "3種類以上の天気が現れる日を最後まで遊ぶ", desc: "天気が目まぐるしく変わるのは前線や気圧の谷の通過サイン。" },
+    { id: "chain3", name: "三重の同調", glyph: "✨", cond: "1手で3ペア以上を同時に消す", desc: "" },
+    { id: "combo5", name: "五連コンボ", glyph: "🎯", cond: "5手連続で同調させる", desc: "" },
+    { id: "star3", name: "名観測員",   glyph: "⭐", cond: "★3でクリアする", desc: "" },
+    { id: "norescue", name: "自力観測", glyph: "🧭", cond: "救済なしでクリアする", desc: "" },
+    { id: "zenkeshi", name: "気圧一掃", glyph: "🌀", cond: "灼熱/極寒の全消去を発動する", desc: "" },
+    { id: "sweep3", name: "一掃気流", glyph: "💨", cond: "1回のスライドで同じ天気を3つ以上巻き込んで消す", desc: "" },
+    { id: "allskill", name: "全天運転", glyph: "🌈", cond: "1プレイで☀️🌧️❄️のスキルをすべて発動する", desc: "" },
+    { id: "combo8", name: "八連コンボ", glyph: "🏅", cond: "8手連続で同調させる", desc: "" },
+    { id: "speed", name: "疾風", glyph: "🌪️", cond: "45手以内でクリアする", desc: "" },
+    { id: "days3", name: "観測三日目", glyph: "📔", cond: "3日(暦日)以上プレイする", desc: "毎日の空を記録するのは観測の基本。気象人日記への第一歩。" },
+    { id: "areas2", name: "広域観測", glyph: "🗾", cond: "2つ以上のエリアでクリアする", desc: "同じ日でも空はエリアごとに違う。" },
+  ];
+
+  const DEX_MERGE_TYPES = BASE_TYPES.concat(CHANCE_TYPES);
+  /* マージ成立時に解禁される図鑑ID */
+  function dexOnMerge(st, r, type) {
+    const ids = [];
+    if (r.pairs > 0 && DEX_MERGE_TYPES.includes(type)) ids.push(type);
+    if (r.pairs >= 3) ids.push("chain3");
+    if ((r.sweeps || []).length >= 2) ids.push("sweep3"); // 巻き込み2 + 自身 = 3個同時
+    if (st.comboStreak >= 5) ids.push("combo5");
+    if (st.comboStreak >= 8) ids.push("combo8");
+    if (r.chanceEffect && (r.chanceEffect.type === "heat" || r.chanceEffect.type === "cold")) ids.push("zenkeshi");
+    return ids;
+  }
+  /* エンディング到達時に解禁される図鑑ID。metaは主にUI層が集計する実績情報:
+   * { playDays: 異なる暦日のプレイ数, areasCleared: クリア済みエリア数 } */
+  function dexOnEnding(st, meta) {
+    const ids = [];
+    const m = meta || {};
+    if (st.moveCount <= 45) ids.push("speed");
+    if (st.skillsUsed && st.skillsUsed.sun && st.skillsUsed.rain && st.skillsUsed.snow) ids.push("allskill");
+    if ((m.playDays || 0) >= 3) ids.push("days3");
+    if ((m.areasCleared || 0) >= 2) ids.push("areas2");
+    const ph = st.phases;
+    if (ph.some((p) => (p.weatherText || "").includes("雨または雪") ||
+                       ((p.weights.rain || 0) >= 0.3 && (p.weights.snow || 0) >= 0.3))) ids.push("mixed");
+    if (ph.some((p) => p.pops != null && p.pops >= 80)) ids.push("arate");
+    if (ph.every((p) => p.dominant === "sun")) ids.push("kaisei");
+    if (new Set(ph.map((p) => p.dominant)).size >= 3) ids.push("utsurigi");
+    if (starRating(st) === 3) ids.push("star3");
+    if (st.rescueCount === 0) ids.push("norescue");
+    return ids;
+  }
+
   /* ---------------- 効率評価(星3段階) ---------------- */
   function starRating(st) {
     const totalQuota = st.quotaPerPhase * st.phases.length;
-    const par = totalQuota * CONFIG.parFactor;
+    const par = totalQuota * CONFIG.parFactorFor(st.phases.length);
     const m = st.effectiveMoves;
     if (m <= par * CONFIG.star3) return 3;
     if (m <= par * CONFIG.star2) return 2;
@@ -867,6 +1085,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     mulberry32, idx, xy, neighbors,
     createState, currentPhase, rollType, chanceEligible,
     emptyCells, validTargets, applyMove, endTurn, fireSkill, fillSpawnQueue,
+    DEX, dexOnMerge, dexOnEnding, DIRS, MOVEMENT, movementFor,
     anyValidMove, rescue, starRating, weatherDigest,
     blockRuleFor, spawnBlocks,
   };
@@ -1418,7 +1637,13 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
         }
       },
       chance(type) { const f = mergeSounds[type]; if (f) f(1); },
-      phase() { noise(0.4, 0.14, 500, 0, 2000); tone(660, 0.12, "sine", 0.14, 0.28); }, // 時間が進む
+      phase() { // 時間が進む: 風の駆け上がり + 上昇3音チャイム
+        noise(0.5, 0.16, 400, 0, 2600);
+        tone(523, 0.16, "sine", 0.13, 0.16);
+        tone(659, 0.16, "sine", 0.13, 0.30);
+        tone(784, 0.30, "triangle", 0.15, 0.44);
+        tone(1568, 0.35, "sine", 0.05, 0.44);
+      },
       ending() {
         const seq = [523, 659, 784, 1046];
         seq.forEach((f, i) => { tone(f, 1.1 - i * 0.1, "sine", 0.14, i * 0.16); tone(f * 2, 0.8, "sine", 0.05, i * 0.16); });
@@ -1540,8 +1765,14 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     document.body.classList.toggle("dark-sky", dark);
   }
 
+  const WDAY = ["日", "月", "火", "水", "木", "金", "土"];
+  function jstDateLabel(d) {
+    const j = new Date(d.getTime() + 9 * 3600e3);
+    return `${j.getUTCMonth() + 1}月${j.getUTCDate()}日(${WDAY[j.getUTCDay()]})`;
+  }
   function renderPhaseBar() {
     const ph = L.currentPhase(st);
+    $("#phaseDate").textContent = jstDateLabel(ph.start);
     $("#phaseTime").textContent = ph.label;
     const popsEl = $("#phasePops");
     popsEl.textContent = ph.pops == null ? "--%" : ph.pops + "%";
@@ -1614,7 +1845,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       const bl = st.blocked[i];
       d.classList.toggle("wet", !!bl && bl.kind === "wet");
       d.classList.toggle("ice", !!bl && bl.kind === "ice");
-      d.classList.remove("target", "target-merge", "selected-cell");
+      d.classList.remove("target", "target-merge", "trail", "selected-cell");
     });
   }
 
@@ -1667,7 +1898,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     }
     if (i === selected) { clearSelection(); return; }
     const targets = L.validTargets(st, selected);
-    const t = targets.find((v) => v.to === i);
+    const t = targets.find((v) => v.to === i || (v.sweeps && v.sweeps.includes(i)));
     if (t) { playMove(selected, i); }
     else if (st.cells[i]) { selectTile(i); }
     else { Sound.deny(); clearSelection(); }
@@ -1683,6 +1914,8 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     for (const t of L.validTargets(st, i)) {
       const cell = $("#cells").children[t.to];
       cell.classList.add(t.kind === "merge" ? "target-merge" : "target");
+      for (const p of t.path || []) $("#cells").children[p].classList.add("trail");
+      for (const sw of t.sweeps || []) $("#cells").children[sw].classList.add("target-merge"); // 巻き込み対象もタップ可
     }
   }
   function clearSelection() {
@@ -1692,7 +1925,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       if (el) el.classList.remove("selected");
     }
     selected = -1;
-    [...$("#cells").children].forEach((d) => d.classList.remove("target", "target-merge"));
+    [...$("#cells").children].forEach((d) => d.classList.remove("target", "target-merge", "trail"));
   }
 
   /* ---------------- 1手の実行と演出 ---------------- */
@@ -1704,13 +1937,21 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     const r = L.applyMove(st, from, to);
     clearSelection();
     if (!r.ok) { busy = false; return; }
+    to = r.to; // 貫通スライドの実着地マス
 
-    // 移動アニメーション
+    // 移動アニメーション: スライド距離に応じて時間を伸ばす(滑走感)
     const el = tileEls.get(mover);
     const [tx, ty] = posOf(to);
-    if (el) el.style.transform = `translate(${tx}px, ${ty}px)`;
-
-    const moveDur = reducedMotion ? 0 : 140;
+    const [fx0, fy0] = L.xy(from, st.w);
+    const [tx0, ty0] = L.xy(to, st.w);
+    const dist = Math.abs(fx0 - tx0) + Math.abs(fy0 - ty0);
+    const moveDur = reducedMotion ? 0 : Math.min(90 + dist * 45, 320);
+    if (el) {
+      el.style.transitionDuration = moveDur + "ms";
+      el.style.transitionTimingFunction = "cubic-bezier(0.2, 0.7, 0.3, 1)";
+      el.style.transform = `translate(${tx}px, ${ty}px)`;
+      setTimeout(() => { el.style.transitionDuration = ""; el.style.transitionTimingFunction = ""; }, moveDur + 40);
+    }
     setTimeout(() => {
       if (r.cleared.length) {
         // マージ演出
@@ -1743,6 +1984,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
             emitParticles(bx + cellSize() / 2, by + cellSize() / 2, "sun", 1, 1);
           }
         }
+        unlockDex(L.dexOnMerge(st, r, domType));
         if (r.chain) showToast(`連鎖 ×${r.pairs}!`, "chain");
         if (r.chanceEffect) {
           Sound.chance(r.chanceEffect.type);
@@ -1767,9 +2009,13 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       busy = false;
     };
     if (ev.phaseAdvanced) {
-      // 音・バナー・タイル遷移・空の変化を同一タイミングで開始する
+      // 音・バナー・タイル遷移・空の変化・光の奔流を同一タイミングで開始する
+      const ph = L.currentPhase(st);
+      const prev = st.phases[st.phaseIndex - 1];
+      const dayChanged = prev && jstDateLabel(prev.start) !== jstDateLabel(ph.start);
       Sound.phase();
-      showTimeBanner(L.currentPhase(st).label);
+      emitTimeStreaks();
+      showTimeBanner(ph.label, dayChanged ? jstDateLabel(ph.start) + " へ" : "");
       if (!reducedMotion) {
         const board = boardEl();
         clearTimeout(timelapseTimer);
@@ -1794,15 +2040,16 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
 
   /* フェーズ切替時、新しい時間帯ラベルを画面中央に一瞬大きく表示 */
   let bannerTimer = 0;
-  function showTimeBanner(label) {
+  function showTimeBanner(label, sub) {
     if (reducedMotion) return; // 演出省略(テキストは即時切替のみ)
     const b = $("#timeBanner");
-    b.textContent = label;
+    b.innerHTML = `<span class="banner-main">${label}</span>` +
+      (sub ? `<span class="banner-sub">${sub}</span>` : "");
     b.classList.remove("run");
     void b.offsetWidth; // 多重発火時もアニメーションを最初から
     b.classList.add("run");
     clearTimeout(bannerTimer);
-    bannerTimer = setTimeout(() => b.classList.remove("run"), 1000);
+    bannerTimer = setTimeout(() => b.classList.remove("run"), 1150);
   }
 
   function maybeBlockHint(kind) {
@@ -1824,6 +2071,28 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
   const beams = [];   // 🌧️/❄️ 縦横の光ライン
   let particleRAF = 0;
   function startFxLoop() { if (!particleRAF) particleLoop(); }
+
+  /* フェーズ切替: 盤面全体を下から上へ流れる光の奔流(時間が進む演出) */
+  function emitTimeStreaks() {
+    if (reducedMotion) return;
+    const canvas = $("#fx");
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    for (let i = 0; i < 46; i++) {
+      particles.push({
+        x: Math.random() * w,
+        y: h + Math.random() * h * 0.6,
+        vx: (Math.random() - 0.5) * 0.4,
+        vy: -(5.5 + Math.random() * 5),
+        g: -0.06,                       // 加速しながら駆け上がる
+        r: 1 + Math.random() * 1.6,
+        streak: 10 + Math.random() * 22, // 縦に伸びる光
+        life: 1,
+        decay: 0.016 + Math.random() * 0.014,
+        c: i % 3 ? "#FFFFFF" : "#BCD9F2",
+      });
+    }
+    startFxLoop();
+  }
 
   /* ☀️ sun発動: 着地マス中心の光のパルス(二重リング) */
   function emitPulse(x, y) {
@@ -1914,9 +2183,13 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       if (p.life <= 0) { particles.splice(i, 1); continue; }
       ctx.globalAlpha = Math.max(0, p.life);
       ctx.fillStyle = p.c;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r * p.life + 0.4, 0, Math.PI * 2);
-      ctx.fill();
+      if (p.streak) {
+        ctx.fillRect(p.x - p.r / 2, p.y, p.r, p.streak * p.life); // 上昇する光の筋
+      } else {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r * p.life + 0.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     // ☀️ 円形パルス(最前面)
     for (let i = rings.length - 1; i >= 0; i--) {
@@ -1952,9 +2225,63 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     toastTimer = setTimeout(() => { t.className = ""; }, duration || 1600);
   }
 
+  /* ---------------- 天気図鑑 ---------------- */
+  function dexData() { return store.get("wm.dex", {}); }
+  function dexStamp() {
+    const d = new Date();
+    return `${d.getFullYear()}.${d.getMonth() + 1}.${d.getDate()}`;
+  }
+  function unlockDex(ids) {
+    if (!ids || !ids.length) return;
+    const dex = dexData();
+    const fresh = [];
+    for (const id of ids) {
+      if (!dex[id]) { dex[id] = { date: dexStamp(), area: areaName }; fresh.push(id); }
+    }
+    if (!fresh.length) return;
+    store.set("wm.dex", dex);
+    // 複数解禁は時間差で通知(トーストの上書き衝突を避ける)
+    fresh.forEach((id, k) => {
+      const e = L.DEX.find((d) => d.id === id);
+      if (e) setTimeout(() => showToast(`図鑑に「${e.name}」を記録しました`, "dex", 1500), 500 + k * 1700);
+    });
+    updateDexBtn();
+  }
+  function updateDexBtn() {
+    const n = Object.keys(dexData()).length;
+    $("#dexBtn").textContent = `図鑑 ${n}/${L.DEX.length}`;
+  }
+  function renderDex() {
+    const dex = dexData();
+    $("#dexTitle").textContent = `天気図鑑 ${Object.keys(dex).length}/${L.DEX.length}`;
+    $("#dexGrid").innerHTML = L.DEX.map((d) => {
+      const u = dex[d.id];
+      if (!u) {
+        return `<div class="dex-card locked">
+          <div class="dex-glyph">?</div>
+          <div class="dex-name">???</div>
+          <div class="dex-cond">${d.cond}</div>
+        </div>`;
+      }
+      return `<div class="dex-card">
+        <div class="dex-glyph">${d.glyph}</div>
+        <div class="dex-name">${d.name}</div>
+        ${d.desc ? `<div class="dex-desc">${d.desc}</div>` : `<div class="dex-cond">${d.cond}</div>`}
+        <div class="dex-date">${u.date} · ${u.area}</div>
+      </div>`;
+    }).join("");
+  }
+
   /* ---------------- エンディング ---------------- */
   function showEnding() {
     Sound.ending();
+    // 実績集計: 暦日プレイ日数とクリア済みエリア
+    const days = store.get("wm.playDays", []);
+    const today = dexStamp();
+    if (!days.includes(today)) { days.push(today); store.set("wm.playDays", days); }
+    const areas = store.get("wm.areasCleared", []);
+    if (!areas.includes(areaCode)) { areas.push(areaCode); store.set("wm.areasCleared", areas); }
+    unlockDex(L.dexOnEnding(st, { playDays: days.length, areasCleared: areas.length }));
     const stars = L.starRating(st);
     $("#endStars").innerHTML = [1, 2, 3].map((i) => `<span class="star ${i <= stars ? "on" : ""}">★</span>`).join("");
     const digest = L.weatherDigest(st.phases);
@@ -2042,6 +2369,9 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     $("#volume").value = Math.round(Sound.volume * 100);
     updateMuteBtn();
     $("#areaBtn").addEventListener("click", openAreaPicker);
+    $("#dexBtn").addEventListener("click", () => { renderDex(); $("#dexModal").hidden = false; });
+    $("#dexClose").addEventListener("click", () => { $("#dexModal").hidden = true; });
+    updateDexBtn();
     $("#areaClose").addEventListener("click", () => { $("#areaModal").hidden = true; });
     $("#replayBtn").addEventListener("click", () => boot());
     window.addEventListener("resize", () => { if (st) renderTiles(true); });
