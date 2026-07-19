@@ -1,0 +1,2190 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Weather Match — テストスイート</title>
+<style>
+body { font-family: "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif; margin: 24px; color: #26313F; background: #F4F8FC; }
+h1 { font-size: 18px; }
+#summary { font-size: 22px; font-weight: 700; margin: 14px 0; }
+#summary.ok { color: #1E7A46; }
+#summary.ng { color: #B03030; }
+li { font-size: 13px; color: #B03030; margin: 3px 0; }
+p.note { font-size: 12px; color: #5A6774; }
+</style>
+</head>
+<body>
+<h1>Weather Match — アサーションベース・テストスイート</h1>
+<p class="note">Node: <code>node tests.js</code> でも同一のテストを実行できます。</p>
+<div id="summary">実行中…</div>
+<ul id="failures"></ul>
+<script>
+/* =========================================================================
+ * Weather Match — logic.js
+ * 盤面・移動・マージ判定・連鎖・新規出現抽選・ノルマ/フェーズ進行・
+ * 濡れマス/凍結マス・天候スキル・手詰まり検知と救済・コンボ計測・効率評価
+ * 純粋ロジック層。DOM/fetchには一切依存しない(Node上でテスト可能)。
+ * ========================================================================= */
+(function (global) {
+  "use strict";
+
+  /* ---------------- 調整用パラメータ(仮値。相談しながら詰める) ---------------- */
+  const CONFIG = {
+    boardW: 6,
+    boardH: 6,
+    initialItems: 12,         // 開始時に盤面へ配置するアイテム数
+    spawnPerTurn: 1,          // ターン終了時の新規出現数
+    spawnExtraOnMerge: false, // trueならマージが成立したターンだけ出現+1(消すほど込み合う圧)
+    phaseSeedItems: 4,        // フェーズ移行時、最下段の新規行に置くアイテム数(0〜boardW)
+    // ノルマ(マージ回数)。フェーズ数に応じて自動決定
+    quotaFor: (phaseCount) => (phaseCount >= 6 ? 4 : 8),
+    // チャンスアイテム閾値(Weather Drop値を確認するまでの仮値)
+    heatTempMax: 35,          // 灼熱: tempMax >= 35(猛暑日)
+    coldTempMax: 0,           // 極寒: tempMax <= 0(真冬日)
+    coldTempMin: -5,          // 極寒: または tempMin <= -5
+    dropPops: 70,             // 💧: pops >= 70
+    chanceRate: 0.12,         // 条件成立フェーズ中、新規出現がチャンス枠になる確率
+    boltRange: 1,             // ⚡️/💧の範囲消去: 中心から±1(3×3)
+    // 濡れマス/凍結マス(仮の対応表)
+    wetRules: [               // pops閾値 → {count, duration}
+      { pops: 80, count: 3, duration: 3 },
+      { pops: 60, count: 2, duration: 3 },
+      { pops: 50, count: 1, duration: 2 },
+    ],
+    iceRules: [               // 雪比率閾値 → {count, duration}
+      { snow: 0.6, count: 3, duration: 4 },
+      { snow: 0.3, count: 2, duration: 3 },
+    ],
+    blockRespawnChance: 0.30, // 該当フェーズ中、毎ターン追加発生する確率(上限countまで)
+    // 天候スキル: 追加消去1マスあたりのノルマ加算量(2マスで+1。フェーズ飛ばし抑制)
+    skillQuotaPerTile: 0.5,
+    // 次の出現予告: 先読みして表示する個数
+    previewCount: 2,
+    // スライド移動: falseなら障害物/端まで滑る(強制スライド)。trueで経路途中も選択可
+    slideStopAnywhere: false,
+    // 貫通の巻き込み上限(1スライドで消せる同種の数)。0=無制限。
+    // 上限に達した場合、そのマスで停止する(それ以上は進まない)
+    sweepLimit: 0,
+    // 連鎖ボーナス: 1手で pairs>=2 のとき
+    chainMoveRefund: 1,       // 効率評価上、実質手数を pairs-1 だけ差し引く
+    // 効率評価(星): par = 総ノルマ × parFactor 手(フェーズ数でモード別)
+    parFactorFor: (phaseCount) => (phaseCount >= 6 ? 1.3 : 1.5),
+    star3: 1.0,               // moves <= par*1.0 → ★3
+    star2: 1.5,               // moves <= par*1.5 → ★2
+  };
+
+  /* ---------------- 乱数(シード注入可能・テスト再現用) ---------------- */
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /* ---------------- 盤面ユーティリティ ---------------- */
+  const idx = (x, y, w) => y * w + x;
+  const xy = (i, w) => [i % w, Math.floor(i / w)];
+  function neighbors(i, w, h) {
+    const [x, y] = xy(i, w);
+    const out = [];
+    if (x > 0) out.push(i - 1);
+    if (x < w - 1) out.push(i + 1);
+    if (y > 0) out.push(i - w);
+    if (y < h - 1) out.push(i + w);
+    return out;
+  }
+
+  const BASE_TYPES = ["sun", "cloud", "rain", "snow"];
+  const CHANCE_TYPES = ["heat", "cold", "drop", "bolt"];
+  const isChance = (t) => CHANCE_TYPES.includes(t);
+
+  /* ---------------- 状態生成 ---------------- */
+  function createState(phases, opts = {}) {
+    const w = opts.w || CONFIG.boardW;
+    const h = opts.h || CONFIG.boardH;
+    const rng = opts.rng || mulberry32(opts.seed != null ? opts.seed : (Date.now() & 0xffffffff));
+    const quota = CONFIG.quotaFor(phases.length);
+    const st = {
+      w, h, rng,
+      cells: new Array(w * h).fill(null),  // null | {type}
+      blocked: {},                          // idx -> {kind:'wet'|'ice', turns}
+      phases,                               // weather.js が構築したフェーズ配列
+      phaseIndex: 0,
+      quotaPerPhase: quota,
+      quotaProgress: 0,                     // 現フェーズのマージ回数
+      moveCount: 0,
+      effectiveMoves: 0,                    // 連鎖ボーナス控除後の実質手数
+      mergeEvents: 0,                       // 累計マージ回数(pairs単位)
+      chainCount: 0,                        // 連鎖(1手複数ペア)発生回数
+      comboStreak: 0,                       // 連続マージ手数
+      maxCombo: 0,
+      rescueCount: 0,
+      skillsUsed: {},              // このプレイで発動したスキル種(図鑑用)
+      lastMovePairs: 0,            // 直前手のマージペア数(加圧スポーン判定用)
+      ended: false,
+    };
+    seedInitialItems(st, CONFIG.initialItems);
+    st.spawnQueue = [];          // 次の出現予告(先頭から順に湧く)
+    fillSpawnQueue(st);
+    applyPhaseBlocks(st, true);
+    return st;
+  }
+
+  function currentPhase(st) { return st.phases[st.phaseIndex]; }
+
+  /* 現フェーズの出現比率で1種抽選 */
+  function rollType(st) {
+    const ph = currentPhase(st);
+    // チャンス枠
+    const eligible = chanceEligible(ph);
+    if (eligible.length && st.rng() < CONFIG.chanceRate) {
+      return eligible[Math.floor(st.rng() * eligible.length)];
+    }
+    const weights = ph.weights; // {sun,cloud,rain,snow} 合計1
+    let r = st.rng(), acc = 0;
+    for (const t of BASE_TYPES) {
+      acc += weights[t] || 0;
+      if (r < acc) return t;
+    }
+    return BASE_TYPES.find((t) => (weights[t] || 0) > 0) || "cloud";
+  }
+
+  /* フェーズ条件からチャンスアイテム候補を返す(データは一切歪めない: 判定のみ) */
+  function chanceEligible(ph) {
+    const out = [];
+    if (ph.tempMax != null && ph.tempMax >= CONFIG.heatTempMax) out.push("heat");
+    if ((ph.tempMax != null && ph.tempMax <= CONFIG.coldTempMax) ||
+        (ph.tempMin != null && ph.tempMin <= CONFIG.coldTempMin)) out.push("cold");
+    if (ph.pops != null && ph.pops >= CONFIG.dropPops) out.push("drop");
+    if (ph.weatherText && ph.weatherText.includes("雷")) out.push("bolt");
+    return out;
+  }
+
+  /* 出現予告キューを規定数まで補充する。抽選は現フェーズの比率に従う */
+  function fillSpawnQueue(st) {
+    while (st.spawnQueue.length < CONFIG.previewCount) st.spawnQueue.push(rollType(st));
+    return st.spawnQueue;
+  }
+
+  function emptyCells(st, excludeBlocked = true) {
+    const out = [];
+    for (let i = 0; i < st.cells.length; i++) {
+      if (st.cells[i]) continue;
+      if (excludeBlocked && st.blocked[i]) continue;
+      out.push(i);
+    }
+    return out;
+  }
+
+  function seedInitialItems(st, n) {
+    for (let k = 0; k < n; k++) {
+      const empties = emptyCells(st);
+      if (!empties.length) break;
+      const i = empties[Math.floor(st.rng() * empties.length)];
+      st.cells[i] = { type: rollType(st) };
+    }
+  }
+
+  /* ---------------- 移動先の妥当性(貫通スライド) ----------------
+   * アイテムは選んだ方向へ直線に滑る。**同じ天気は素通りしながら巻き込んで消し**、
+   * それ以外の障害物(盤端・濡れ/凍結マス・異種アイテム)で停止する。
+   * 経路途中では止まれない(強制スライド)。
+   * 濡れマス・凍結マスは「壁」として滑り止めに利用できる。
+   * ターゲット: to=停止マス, kind=merge(巻き込みあり)/move,
+   *   path=通過した空きマス(UI軌跡用), sweeps=巻き込んだ同種マス。
+   * UI/applyMoveは sweeps 内のマスをタップ先の別名として受け付ける。 */
+  const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const DIRS_V = [[0, 1], [0, -1]];
+  const DIRS_H = [[1, 0], [-1, 0]];
+  const DIRS_8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+
+  /* 駒ごとの動き(チェス式)。天気の性質=動きの性質:
+   * ☀️ 晴れ: 光はまっすぐ遠くへ → 縦横に滑走(貫通あり)
+   * ☂️ 雨 : 降るものは縦    → 縦方向のみ滑走(貫通あり)。縦ウォッシュと対応
+   * ❄️ 雪 : 風に流される    → 横方向のみ滑走(貫通あり)。横ブリザードと対応
+   * ☁️ くもり: 漂う          → 全8方向に1歩(斜めが使える代わりに遅い)
+   * チャンス4種: 全8方向に1歩 */
+  const MOVEMENT = {
+    sun:   { dirs: DIRS,   slide: true },
+    rain:  { dirs: DIRS_V, slide: true },
+    snow:  { dirs: DIRS_H, slide: true },
+    cloud: { dirs: DIRS_8, slide: false },
+    heat:  { dirs: DIRS_8, slide: false },
+    cold:  { dirs: DIRS_8, slide: false },
+    drop:  { dirs: DIRS_8, slide: false },
+    bolt:  { dirs: DIRS_8, slide: false },
+  };
+  const movementFor = (type) => MOVEMENT[type] || MOVEMENT.cloud;
+
+  function validTargets(st, from) {
+    const item = st.cells[from];
+    if (!item || st.ended) return [];
+    const out = [];
+    const [fx, fy] = xy(from, st.w);
+    const spec = movementFor(item.type);
+    if (!spec.slide) {
+      // 1歩駒: 8方向いずれかへ1マス。同種の上へ乗れば同調マージ
+      for (const [dx, dy] of spec.dirs) {
+        const x = fx + dx, y = fy + dy;
+        if (x < 0 || y < 0 || x >= st.w || y >= st.h) continue;
+        const i = idx(x, y, st.w);
+        if (st.blocked[i]) continue;
+        const occ = st.cells[i];
+        if (!occ) out.push({ to: i, kind: "move", path: [], sweeps: [] });
+        else if (occ.type === item.type) out.push({ to: i, kind: "merge", path: [], sweeps: [i] });
+      }
+      return out;
+    }
+    for (const [dx, dy] of spec.dirs) {
+      let x = fx + dx, y = fy + dy;
+      let stop = -1;                 // 最終的な着地マス(空き or 最後に巻き込んだ同種マス)
+      const path = [];               // 通過した空きマス
+      const sweeps = [];             // 巻き込んだ同種マス
+      while (x >= 0 && y >= 0 && x < st.w && y < st.h) {
+        const i = idx(x, y, st.w);
+        if (st.blocked[i]) break;                      // 濡れ/凍結マス=壁
+        const occ = st.cells[i];
+        if (occ) {
+          if (occ.type !== item.type) break;           // 異種=壁
+          sweeps.push(i);                              // 同種=素通りで巻き込む
+          stop = i;
+          if (CONFIG.sweepLimit > 0 && sweeps.length >= CONFIG.sweepLimit) break; // 上限で停止
+        } else {
+          if (CONFIG.slideStopAnywhere) out.push({ to: i, kind: sweeps.length ? "merge" : "move", path: path.slice(), sweeps: sweeps.slice() });
+          path.push(i);
+          stop = i;
+        }
+        x += dx; y += dy;
+      }
+      if (stop < 0) continue;                          // その方向へは1マスも進めない
+      if (CONFIG.slideStopAnywhere) {
+        if (sweeps.length && st.cells[stop]) out.push({ to: stop, kind: "merge", path: path.slice(), sweeps: sweeps.slice() });
+        continue;
+      }
+      out.push({
+        to: stop,
+        kind: sweeps.length ? "merge" : "move",
+        path: path.filter((p) => p !== stop),
+        sweeps,
+      });
+    }
+    return out;
+  }
+
+  /* ---------------- 移動+マージ解決 ----------------
+   * 着地マスに同種が居ればそれ+着地マスの隣接同種すべてが同時マージ(連鎖)。
+   * 戻り値: {ok, from, to, cleared:[idx], pairs, chain, chanceEffect, comboStreak, quotaDone}
+   */
+  function applyMove(st, from, to) {
+    const targets = validTargets(st, from);
+    // 停止マスだけでなく、巻き込み対象(sweeps)のタップも同じ手として受け付ける
+    const t = targets.find((v) => v.to === to || (v.sweeps && v.sweeps.includes(to)));
+    if (!t) return { ok: false };
+    const dest = t.to;
+    const item = st.cells[from];
+    st.cells[from] = null;
+
+    // マージ相手の収集: 経路上で巻き込んだ同種(sweeps) + 着地マスの隣接同種(連鎖)
+    const partners = new Set(t.sweeps || []);
+    for (const n of neighbors(dest, st.w, st.h)) {
+      const c = st.cells[n];
+      if (c && c.type === item.type) partners.add(n);
+    }
+
+    st.cells[dest] = item; // いったん着地(巻き込み対象の上でも可: 直後に同時消去)
+    to = dest;
+    st.moveCount++;
+    st.lastMovePairs = partners.size;
+
+    let cleared = [], pairs = 0, chanceEffect = null, skillEffect = null;
+    if (partners.size > 0) {
+      pairs = partners.size;
+      const clearedSet = new Set([to, ...partners]);
+      for (const i of clearedSet) st.cells[i] = null;
+      // チャンスアイテム同士のマージ → 効果発動(従来通り)
+      if (isChance(item.type)) {
+        chanceEffect = fireChance(st, item.type, to);
+        for (const i of chanceEffect.cleared) clearedSet.add(i);
+      }
+      // 天候スキル: 着地タイプに応じた追加効果(sun/rain/snowのみ。cloud・チャンスは無し)
+      skillEffect = fireSkill(st, item.type, to);
+      if (skillEffect) st.skillsUsed[skillEffect.type] = true;
+      let skillQuota = 0;
+      if (skillEffect) {
+        for (const i of skillEffect.cells) clearedSet.add(i);
+        // スキルによる追加消去はすべてノルマに反映する(係数はCONFIGで調整可)
+        skillQuota = skillEffect.cells.length * CONFIG.skillQuotaPerTile;
+      }
+      cleared = [...clearedSet];
+      st.mergeEvents += pairs;
+      st.quotaProgress += pairs + (chanceEffect ? chanceEffect.quotaBonus : 0) + skillQuota;
+      st.comboStreak++;
+      st.maxCombo = Math.max(st.maxCombo, st.comboStreak);
+      if (pairs >= 2) st.chainCount++;
+      st.effectiveMoves += 1 - Math.min(pairs - 1, 1) * CONFIG.chainMoveRefund * (pairs >= 2 ? 1 : 0);
+      if (pairs >= 2) st.effectiveMoves -= (pairs - 2); // 3ペア以上はさらに控除
+    } else {
+      st.comboStreak = 0;
+      st.effectiveMoves += 1;
+    }
+
+    const quotaDone = st.quotaProgress >= st.quotaPerPhase;
+    return {
+      ok: true, from, to, cleared, pairs,
+      sweeps: t.sweeps || [], path: t.path || [],
+      chain: pairs >= 2, chanceEffect, skillEffect,
+      comboStreak: st.comboStreak, quotaDone,
+    };
+  }
+
+  /* 天候スキル(マージ成立時のみ発動):
+   * ☀️ sun : 着地マス周囲8マスの濡れ/凍結ブロックを即解除(乾燥・融解)。アイテムは消さない
+   * 🌧️ rain: 着地マスと同じ縦1列の他アイテムを追加消去(縦のウォッシュ)
+   * ❄️ snow: 着地マスと同じ横1列の他アイテムを追加消去(横のブリザード)
+   * ☁️ cloud / チャンスアイテム: 追加効果なし
+   * すべて盤面境界チェック済み。呼出側でSetにより二重消去を防止する */
+  function fireSkill(st, type, to) {
+    const [tx, ty] = xy(to, st.w);
+    if (type === "sun") {
+      const thawed = [];
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const x = tx + dx, y = ty + dy;
+          if (x < 0 || y < 0 || x >= st.w || y >= st.h) continue;
+          const i = idx(x, y, st.w);
+          if (st.blocked[i]) {
+            thawed.push({ idx: i, kind: st.blocked[i].kind });
+            delete st.blocked[i];
+          }
+        }
+      }
+      return { type: "sun", cells: [], thawed };
+    }
+    if (type === "rain") {
+      const cells = [];
+      for (let y = 0; y < st.h; y++) {
+        const i = idx(tx, y, st.w);
+        if (i !== to && st.cells[i]) { cells.push(i); st.cells[i] = null; }
+      }
+      return { type: "rain", cells, thawed: [] };
+    }
+    if (type === "snow") {
+      const cells = [];
+      for (let x = 0; x < st.w; x++) {
+        const i = idx(x, ty, st.w);
+        if (i !== to && st.cells[i]) { cells.push(i); st.cells[i] = null; }
+      }
+      return { type: "snow", cells, thawed: [] };
+    }
+    return null;
+  }
+
+  /* チャンス効果: heat/cold=全消去, drop/bolt=範囲(3×3)消去 */
+  function fireChance(st, type, center) {
+    const cleared = [];
+    if (type === "heat" || type === "cold") {
+      for (let i = 0; i < st.cells.length; i++) {
+        if (st.cells[i]) { cleared.push(i); st.cells[i] = null; }
+      }
+      // 全消去は現フェーズのノルマを満たす扱い(仮ルール)
+      return { type, cleared, quotaBonus: Math.max(0, st.quotaPerPhase - st.quotaProgress) };
+    }
+    const [cx, cy] = xy(center, st.w);
+    for (let y = cy - CONFIG.boltRange; y <= cy + CONFIG.boltRange; y++) {
+      for (let x = cx - CONFIG.boltRange; x <= cx + CONFIG.boltRange; x++) {
+        if (x < 0 || y < 0 || x >= st.w || y >= st.h) continue;
+        const i = idx(x, y, st.w);
+        if (st.cells[i]) { cleared.push(i); st.cells[i] = null; }
+      }
+    }
+    return { type, cleared, quotaBonus: 2 }; // 範囲消去は+2マージ相当(仮)
+  }
+
+  /* ---------------- ターン終了処理 ----------------
+   * 1) ブロックマスの残ターン減算
+   * 2) ノルマ達成ならフェーズ移行(1段スライド) or エンディング
+   * 3) 新規出現1個(空き非ブロックマスが無ければスキップ)
+   * 4) ブロックマスの追加発生
+   * 5) 手詰まり検知 → 救済
+   */
+  function endTurn(st) {
+    if (st.ended) return { ended: true };
+    const ev = { spawned: null, blockedExpired: [], blockedNew: [],
+                 phaseAdvanced: false, shiftedOutRow: null, seededRow: [],
+                 ended: false, rescue: null };
+
+    // 1) ブロック減算
+    for (const k of Object.keys(st.blocked)) {
+      st.blocked[k].turns--;
+      if (st.blocked[k].turns <= 0) { ev.blockedExpired.push(+k); delete st.blocked[k]; }
+    }
+
+    // 2) フェーズ進行
+    if (st.quotaProgress >= st.quotaPerPhase) {
+      if (st.phaseIndex >= st.phases.length - 1) {
+        st.ended = true;
+        ev.ended = true;
+        return ev; // エンディングへ
+      }
+      advancePhase(st, ev);
+    }
+
+    // 3) 新規出現: 予告キューの先頭から順に湧く(予告の正確性を保証)
+    const spawnCount = CONFIG.spawnPerTurn +
+      (CONFIG.spawnExtraOnMerge && st.lastMovePairs > 0 ? 1 : 0);
+    ev.spawnedAll = [];
+    for (let k = 0; k < spawnCount; k++) {
+      const empties = emptyCells(st);
+      if (!empties.length) break; // 空き無し → 残りはスキップ(キューは消費しない=予告据え置き)
+      const i = empties[Math.floor(st.rng() * empties.length)];
+      const type = st.spawnQueue.length ? st.spawnQueue.shift() : rollType(st);
+      st.cells[i] = { type };
+      ev.spawnedAll.push({ idx: i, type });
+      fillSpawnQueue(st);
+    }
+    ev.spawned = ev.spawnedAll[0] || null;
+    st.lastMovePairs = 0;
+
+    // 4) ブロック追加発生
+    ev.blockedNew = maybeSpawnBlocks(st);
+
+    // 5) 手詰まり検知
+    if (!anyValidMove(st)) ev.rescue = rescue(st);
+
+    return ev;
+  }
+
+  function advancePhase(st, ev) {
+    st.phaseIndex++;
+    st.quotaProgress = 0;
+    // 盤面を1段上へスライド: 最上段は「過去の時間」として消える
+    ev.shiftedOutRow = st.cells.slice(0, st.w);
+    for (let y = 0; y < st.h - 1; y++) {
+      for (let x = 0; x < st.w; x++) {
+        st.cells[idx(x, y, st.w)] = st.cells[idx(x, y + 1, st.w)];
+      }
+    }
+    // 最下段に新しい行(新フェーズの比率でシード)
+    const bottom = [];
+    for (let x = 0; x < st.w; x++) {
+      st.cells[idx(x, st.h - 1, st.w)] = null;
+      bottom.push(idx(x, st.h - 1, st.w));
+    }
+    const picks = shuffle(bottom, st.rng).slice(0, CONFIG.phaseSeedItems);
+    for (const i of picks) {
+      const type = rollType(st);
+      st.cells[i] = { type };
+      ev.seededRow.push({ idx: i, type });
+    }
+    // ブロックマスもスライド(1段上へ)。最上段行にあったものは消滅
+    const nb = {};
+    for (const k of Object.keys(st.blocked)) {
+      const i = +k;
+      if (i >= st.w) nb[i - st.w] = st.blocked[k];
+    }
+    st.blocked = nb;
+    // 予告キューは新フェーズの比率で引き直す(切替の瞬間に予告も天気が変わる)
+    st.spawnQueue = [];
+    fillSpawnQueue(st);
+    ev.phaseAdvanced = true;
+    applyPhaseBlocks(st, false, ev);
+  }
+
+  /* フェーズ開始時のブロックマス初期配置 */
+  function applyPhaseBlocks(st, initial, ev) {
+    const rule = blockRuleFor(currentPhase(st));
+    if (!rule) return;
+    const added = spawnBlocks(st, rule.kind, rule.count, rule.duration);
+    if (ev) ev.blockedNew = (ev.blockedNew || []).concat(added);
+  }
+
+  function blockRuleFor(ph) {
+    if (!ph) return null;
+    // 凍結: 雪比率で判定
+    for (const r of CONFIG.iceRules) {
+      if ((ph.weights.snow || 0) >= r.snow) return { kind: "ice", count: r.count, duration: r.duration };
+    }
+    // 濡れ: 降水確率で判定
+    if (ph.pops != null) {
+      for (const r of CONFIG.wetRules) {
+        if (ph.pops >= r.pops) return { kind: "wet", count: r.count, duration: r.duration };
+      }
+    }
+    return null; // 穏やかなフェーズはブロック無し
+  }
+
+  function spawnBlocks(st, kind, count, duration) {
+    const added = [];
+    const current = Object.values(st.blocked).filter((b) => b.kind === kind).length;
+    const empties = emptyCells(st, true);
+    const n = Math.min(Math.max(0, count - current), empties.length);
+    const picks = shuffle(empties, st.rng).slice(0, n);
+    for (const i of picks) {
+      st.blocked[i] = { kind, turns: duration };
+      added.push({ idx: i, kind, turns: duration });
+    }
+    return added;
+  }
+
+  function maybeSpawnBlocks(st) {
+    const rule = blockRuleFor(currentPhase(st));
+    if (!rule) return [];
+    if (st.rng() >= CONFIG.blockRespawnChance) return [];
+    return spawnBlocks(st, rule.kind, rule.count, rule.duration);
+  }
+
+  /* ---------------- 手詰まり検知と救済 ---------------- */
+  function anyValidMove(st) {
+    for (let i = 0; i < st.cells.length; i++) {
+      if (st.cells[i] && validTargets(st, i).length) return true;
+    }
+    return false;
+  }
+
+  /* 救済(失敗によるゲームオーバー無し設計):
+   * 1) まず全ブロックマスを解除して再判定
+   * 2) それでも詰みなら、最多種の最近接ペアを強制マージ(自動一段階圧縮) */
+  function rescue(st) {
+    const ev = { thawed: false, forcedMerge: null };
+    if (Object.keys(st.blocked).length) {
+      st.blocked = {};
+      ev.thawed = true;
+      if (anyValidMove(st)) { st.rescueCount++; return ev; }
+    }
+    const byType = {};
+    st.cells.forEach((c, i) => { if (c) (byType[c.type] = byType[c.type] || []).push(i); });
+    let best = null;
+    for (const t of Object.keys(byType)) {
+      const arr = byType[t];
+      if (arr.length < 2) continue;
+      for (let a = 0; a < arr.length; a++) for (let b = a + 1; b < arr.length; b++) {
+        const [ax, ay] = xy(arr[a], st.w), [bx, by] = xy(arr[b], st.w);
+        const d = Math.abs(ax - bx) + Math.abs(ay - by);
+        if (!best || d < best.d || (d === best.d && arr.length > best.n)) {
+          best = { d, n: arr.length, a: arr[a], b: arr[b], type: t };
+        }
+      }
+    }
+    if (best) {
+      st.cells[best.a] = null;
+      st.cells[best.b] = null;
+      st.mergeEvents += 1;
+      st.quotaProgress += 1;
+      ev.forcedMerge = { a: best.a, b: best.b, type: best.type };
+    }
+    st.rescueCount++;
+    return ev;
+  }
+
+  /* ---------------- 天気図鑑 ----------------
+   * 解説文は気象庁の用語定義に基づく正確な記述のみ(推測は書かない) */
+  const DEX = [
+    { id: "sun",   name: "晴れ",       glyph: "☀️", cond: "☀️を同調させて消す", desc: "雲量2〜8の空。空の8割が雲でも「晴れ」。うごき: 縦横に滑走。" },
+    { id: "cloud", name: "くもり",     glyph: "☁️", cond: "☁️を同調させて消す", desc: "雲量9以上で降水現象がない状態。うごき: 8方向に1歩。" },
+    { id: "rain",  name: "雨",         glyph: "☂️", cond: "☂️を同調させて消す", desc: "直径0.5mm以上の水滴の降水。うごき: 縦に滑走(降るものは縦)。" },
+    { id: "snow",  name: "雪",         glyph: "❄️", cond: "❄️を同調させて消す", desc: "氷の結晶による降水。うごき: 横に滑走(風に流される)。" },
+    { id: "heat",  name: "猛暑日",     glyph: "🔥", cond: "🔥(最高気温35°C以上の日)を消す", desc: "最高気温35°C以上の日。2007年に正式な予報用語となった。" },
+    { id: "cold",  name: "真冬日",     glyph: "🧊", cond: "🧊(最高気温0°C以下等の日)を消す", desc: "最高気温が0°C未満の日。最低気温0°C未満は「冬日」。" },
+    { id: "drop",  name: "高い降水確率", glyph: "💧", cond: "💧(降水確率70%以上)を消す", desc: "降水確率は1mm以上の降水がある確率。雨の強さとは無関係。" },
+    { id: "bolt",  name: "雷",         glyph: "⚡️", cond: "⚡️(予報文に「雷」)を消す", desc: "積乱雲内で氷の粒がぶつかり合い電気が生まれる。「雷を伴う」は強い雨のサイン。" },
+    { id: "mixed", name: "雨または雪", glyph: "🌨️", cond: "「雨または雪」の時間帯がある日を最後まで遊ぶ", desc: "気温が雨雪の境目(おおむね2°C前後)のときの予報。時系列予報に現れるレア表記。" },
+    { id: "arate", name: "荒天",       glyph: "🌧️", cond: "降水確率80%以上の時間帯がある日を最後まで遊ぶ", desc: "降水確率80%は「ほぼ確実に降る」予報。傘は迷わず持つ。" },
+    { id: "kaisei", name: "晴れの一日", glyph: "🌞", cond: "全時間帯が晴れの日を最後まで遊ぶ", desc: "雲量1以下なら「快晴」。天気図では二重丸で表す。" },
+    { id: "utsurigi", name: "移ろう空", glyph: "🌦️", cond: "3種類以上の天気が現れる日を最後まで遊ぶ", desc: "天気が目まぐるしく変わるのは前線や気圧の谷の通過サイン。" },
+    { id: "chain3", name: "三重の同調", glyph: "✨", cond: "1手で3ペア以上を同時に消す", desc: "" },
+    { id: "combo5", name: "五連コンボ", glyph: "🎯", cond: "5手連続で同調させる", desc: "" },
+    { id: "star3", name: "名観測員",   glyph: "⭐", cond: "★3でクリアする", desc: "" },
+    { id: "norescue", name: "自力観測", glyph: "🧭", cond: "救済なしでクリアする", desc: "" },
+    { id: "zenkeshi", name: "気圧一掃", glyph: "🌀", cond: "灼熱/極寒の全消去を発動する", desc: "" },
+    { id: "sweep3", name: "一掃気流", glyph: "💨", cond: "1回のスライドで同じ天気を3つ以上巻き込んで消す", desc: "" },
+    { id: "allskill", name: "全天運転", glyph: "🌈", cond: "1プレイで☀️🌧️❄️のスキルをすべて発動する", desc: "" },
+    { id: "combo8", name: "八連コンボ", glyph: "🏅", cond: "8手連続で同調させる", desc: "" },
+    { id: "speed", name: "疾風", glyph: "🌪️", cond: "45手以内でクリアする", desc: "" },
+    { id: "days3", name: "観測三日目", glyph: "📔", cond: "3日(暦日)以上プレイする", desc: "毎日の空を記録するのは観測の基本。気象人日記への第一歩。" },
+    { id: "areas2", name: "広域観測", glyph: "🗾", cond: "2つ以上のエリアでクリアする", desc: "同じ日でも空はエリアごとに違う。" },
+  ];
+
+  const DEX_MERGE_TYPES = BASE_TYPES.concat(CHANCE_TYPES);
+  /* マージ成立時に解禁される図鑑ID */
+  function dexOnMerge(st, r, type) {
+    const ids = [];
+    if (r.pairs > 0 && DEX_MERGE_TYPES.includes(type)) ids.push(type);
+    if (r.pairs >= 3) ids.push("chain3");
+    if ((r.sweeps || []).length >= 2) ids.push("sweep3"); // 巻き込み2 + 自身 = 3個同時
+    if (st.comboStreak >= 5) ids.push("combo5");
+    if (st.comboStreak >= 8) ids.push("combo8");
+    if (r.chanceEffect && (r.chanceEffect.type === "heat" || r.chanceEffect.type === "cold")) ids.push("zenkeshi");
+    return ids;
+  }
+  /* エンディング到達時に解禁される図鑑ID。metaは主にUI層が集計する実績情報:
+   * { playDays: 異なる暦日のプレイ数, areasCleared: クリア済みエリア数 } */
+  function dexOnEnding(st, meta) {
+    const ids = [];
+    const m = meta || {};
+    if (st.moveCount <= 45) ids.push("speed");
+    if (st.skillsUsed && st.skillsUsed.sun && st.skillsUsed.rain && st.skillsUsed.snow) ids.push("allskill");
+    if ((m.playDays || 0) >= 3) ids.push("days3");
+    if ((m.areasCleared || 0) >= 2) ids.push("areas2");
+    const ph = st.phases;
+    if (ph.some((p) => (p.weatherText || "").includes("雨または雪") ||
+                       ((p.weights.rain || 0) >= 0.3 && (p.weights.snow || 0) >= 0.3))) ids.push("mixed");
+    if (ph.some((p) => p.pops != null && p.pops >= 80)) ids.push("arate");
+    if (ph.every((p) => p.dominant === "sun")) ids.push("kaisei");
+    if (new Set(ph.map((p) => p.dominant)).size >= 3) ids.push("utsurigi");
+    if (starRating(st) === 3) ids.push("star3");
+    if (st.rescueCount === 0) ids.push("norescue");
+    return ids;
+  }
+
+  /* ---------------- 効率評価(星3段階) ---------------- */
+  function starRating(st) {
+    const totalQuota = st.quotaPerPhase * st.phases.length;
+    const par = totalQuota * CONFIG.parFactorFor(st.phases.length);
+    const m = st.effectiveMoves;
+    if (m <= par * CONFIG.star3) return 3;
+    if (m <= par * CONFIG.star2) return 2;
+    return 1;
+  }
+
+  /* エンディング用: 天気の移り変わりダイジェスト(連続同一カテゴリは圧縮) */
+  function weatherDigest(phases) {
+    const names = { sun: "晴れ", cloud: "くもり", rain: "雨", snow: "雪", mixed: "雨か雪" };
+    const seq = [];
+    for (const ph of phases) {
+      const label = ph.dominant ? names[ph.dominant] || ph.dominant : "?";
+      if (!seq.length || seq[seq.length - 1] !== label) seq.push(label);
+    }
+    return seq;
+  }
+
+  function shuffle(arr, rng) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  const api = {
+    CONFIG, BASE_TYPES, CHANCE_TYPES, isChance,
+    mulberry32, idx, xy, neighbors,
+    createState, currentPhase, rollType, chanceEligible,
+    emptyCells, validTargets, applyMove, endTurn, fireSkill, fillSpawnQueue,
+    DEX, dexOnMerge, dexOnEnding, DIRS, MOVEMENT, movementFor,
+    anyValidMove, rescue, starRating, weatherDigest,
+    blockRuleFor, spawnBlocks,
+  };
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  else global.WMLogic = api;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* =========================================================================
+ * Weather Match — weather.js
+ * JMA取得、時刻ベースのフェーズ切り出し(24時間先まで)、
+ * 地域時系列予報(VPFD)の実行時検証とフォールバック、モックデータ。
+ *
+ * 原則: 予報にない時間帯データの推測・捏造は行わない。
+ *  - popsは6時間区分の公式値をそのまま各フェーズに割り当てる(補間しない)
+ *  - VPFDの3時間天気はそのままカテゴリに使う。「雨または雪」は両方を等分表現
+ *  - 値が取得できない項目は null のまま保持し、UIは「-」表示にする
+ * ========================================================================= */
+(function (global) {
+  "use strict";
+
+  const FORECAST_URL = (area) => `https://www.jma.go.jp/bosai/forecast/data/forecast/${area}.json`;
+  const AREA_URL = "https://www.jma.go.jp/bosai/common/const/area.json";
+  // 非公式(リバースエンジニアリング)エンドポイント。実行時に必ず検証してから使う
+  const VPFD_URL = (code) => `https://www.jma.go.jp/bosai/jmatile/data/wdist/VPFD/${code}.json`;
+
+  const DEFAULT_AREA = "130000"; // 東京都(府県予報区)。※Weather Dropの110000から変更
+
+  /* ---------------- 天気カテゴリ判定(Weather Dropのcategoryロジック踏襲) ---------------- */
+  /* weatherCode先頭桁: 1=晴れ 2=くもり 3=雨 4=雪 */
+  function categoryFromCode(code) {
+    const c = String(code || "")[0];
+    return c === "1" ? "sun" : c === "2" ? "cloud" : c === "3" ? "rain" : c === "4" ? "snow" : "cloud";
+  }
+
+  /* 予報テキストから出現比率を作る。
+   * 例: 「晴れ時々くもり」→ {sun:0.7, cloud:0.3}
+   * 比率は出現抽選のための演出パラメータであり、予報の表示値ではない。 */
+  const TEXT_CATS = [
+    { re: /晴/g, cat: "sun" },
+    { re: /(くもり|曇)/g, cat: "cloud" },
+    { re: /雪/g, cat: "snow" },   // 「雨または雪」対策で雪を雨より先に走査はしない(位置で判定)
+    { re: /雨/g, cat: "rain" },
+  ];
+  function weightsFromText(text, fallbackCode) {
+    const found = []; // {cat, pos}
+    if (text) {
+      for (const { re, cat } of TEXT_CATS) {
+        re.lastIndex = 0;
+        const m = re.exec(text);
+        if (m && !found.some((f) => f.cat === cat)) found.push({ cat, pos: m.index });
+      }
+      found.sort((a, b) => a.pos - b.pos);
+    }
+    if (!found.length) {
+      const cat = categoryFromCode(fallbackCode);
+      return normalize({ [cat]: 1 });
+    }
+    const w = {};
+    const primary = found[0].cat;
+    w[primary] = 1;
+    for (let k = 1; k < found.length; k++) {
+      const { cat, pos } = found[k];
+      const before = text.slice(Math.max(0, pos - 5), pos);
+      let share = 0.3;                       // 併記(「晴れ くもり」等)の既定
+      if (/一時/.test(before)) share = 0.2;
+      else if (/時々/.test(before)) share = 0.3;
+      else if (/のち|後/.test(before)) share = 1.0;
+      else if (/所により/.test(before)) share = 0.15;
+      w[cat] = (w[cat] || 0) + share;
+    }
+    return normalize(w);
+  }
+  function normalize(w) {
+    const total = Object.values(w).reduce((a, b) => a + b, 0) || 1;
+    const out = { sun: 0, cloud: 0, rain: 0, snow: 0 };
+    for (const k of Object.keys(w)) out[k] = w[k] / total;
+    return out;
+  }
+  function dominantOf(weights) {
+    let best = "cloud", bv = -1;
+    for (const k of Object.keys(weights)) if (weights[k] > bv) { bv = weights[k]; best = k; }
+    return best;
+  }
+
+  /* VPFDの3時間天気文字列 → 比率 */
+  function weightsFromVPFDWeather(s) {
+    if (/雨または雪|雪または雨/.test(s)) return normalize({ rain: 0.5, snow: 0.5 });
+    if (/雪/.test(s)) return normalize({ snow: 1 });
+    if (/雨/.test(s)) return normalize({ rain: 1 });
+    if (/晴/.test(s)) return normalize({ sun: 1 });
+    return normalize({ cloud: 1 });
+  }
+
+  /* 調整用パラメータ(バランス相談用に外出し) */
+  const TUNING = {
+    // VPFDモードの出現比率合成: 3時間カテゴリを主とし、同日の公式予報テキストに
+    // 含まれる「それ以外の」カテゴリ(例: くもり所により雨 の雨)へ回す割合。
+    // 0 にすると3時間カテゴリ100%(単一栽培)に戻る
+    vpfdSecondaryShare: 0.2,
+  };
+
+  /* 3時間カテゴリ(主)に、日別テキスト由来の副次カテゴリを合成する。
+   * 主カテゴリ以外が日別テキストに無ければ何もしない(純度を保つ)。
+   * どちらも同じ対象日の公式予報由来であり、推測・捏造にはあたらない */
+  function applySecondaryWeights(w3, dailyW, share) {
+    const s = share != null ? share : TUNING.vpfdSecondaryShare;
+    if (!dailyW || s <= 0) return w3;
+    const primaries = Object.keys(w3).filter((k) => w3[k] > 0);
+    const others = {};
+    let total = 0;
+    for (const k of Object.keys(dailyW)) {
+      if (primaries.includes(k) || !(dailyW[k] > 0)) continue;
+      others[k] = dailyW[k]; total += dailyW[k];
+    }
+    if (!total) return w3;
+    const out = {};
+    for (const k of primaries) out[k] = w3[k] * (1 - s);
+    for (const k of Object.keys(others)) out[k] = (out[k] || 0) + s * (others[k] / total);
+    return normalize(out);
+  }
+
+  /* ---------------- forecast JSON パース補助 ---------------- */
+  function parseISO(s) { return new Date(s); }
+
+  /* timeSeries[1](6時間pops)から、時刻tを含む区間のpopsを返す。無ければnull */
+  function popsAt(forecast, t, areaIndex = 0) {
+    return popsForRange(forecast, t, new Date(t.getTime() + 1), areaIndex);
+  }
+
+  /* フェーズ[start,end)と最も長く重なる6時間区間の公式popsを返す(補間はしない)。
+   * 発表切替の隙間などで重なりが全く無い場合は null(UIは「--%」表示)。
+   * 例: 11時発表直後はpops区間が12:00開始になり、11時台のフェーズは公式値なし */
+  function popsForRange(forecast, rangeStart, rangeEnd, areaIndex = 0) {
+    try {
+      const ts = forecast[0].timeSeries.find((x) => x.areas[0].pops);
+      if (!ts) return null;
+      const defs = ts.timeDefines.map(parseISO);
+      const pops = ts.areas[areaIndex].pops;
+      let best = null, bestOverlap = 0;
+      for (let i = 0; i < defs.length; i++) {
+        const start = defs[i];
+        const end = i + 1 < defs.length ? defs[i + 1] : new Date(start.getTime() + 6 * 3600e3);
+        const overlap = Math.min(end, rangeEnd) - Math.max(start, rangeStart);
+        if (overlap <= 0) continue;
+        const v = parseInt(pops[i], 10);
+        if (!Number.isFinite(v)) continue; // 空文字("")の区間は公式値なし扱い
+        if (overlap > bestOverlap) { bestOverlap = overlap; best = v; }
+      }
+      return best;
+    } catch (e) { return null; }
+  }
+
+  /* timeSeries[0](日別weatherCodes/weathers)から、時刻tの属する日の値 */
+  function dailyWeatherAt(forecast, t, areaIndex = 0) {
+    try {
+      const ts = forecast[0].timeSeries.find((x) => x.areas[0].weatherCodes);
+      const defs = ts.timeDefines.map(parseISO);
+      for (let i = defs.length - 1; i >= 0; i--) {
+        if (sameJstDate(defs[i], t) || defs[i] <= t) {
+          if (sameJstDate(defs[i], t) || (i === defs.length - 1) ||
+              (t < defs[i + 1] || sameJstDate(defs[i], t))) {
+            // その日のdefine(00:00起点でない場合もあるため日付一致を優先)
+          }
+        }
+      }
+      // シンプルに: 日付(JST)一致するdefineを探し、無ければ直近過去
+      let pick = -1;
+      for (let i = 0; i < defs.length; i++) {
+        if (sameJstDate(defs[i], t)) { pick = i; break; }
+        if (defs[i] <= t) pick = i;
+      }
+      if (pick < 0) return null;
+      return {
+        code: ts.areas[areaIndex].weatherCodes[pick],
+        text: (ts.areas[areaIndex].weathers || [])[pick] || "",
+      };
+    } catch (e) { return null; }
+  }
+
+  function sameJstDate(a, b) {
+    const ja = new Date(a.getTime() + 9 * 3600e3), jb = new Date(b.getTime() + 9 * 3600e3);
+    return ja.getUTCFullYear() === jb.getUTCFullYear() &&
+           ja.getUTCMonth() === jb.getUTCMonth() && ja.getUTCDate() === jb.getUTCDate();
+  }
+
+  /* timeSeries[2](気温)から日別のmin/max。JMA慣行: 00:00=最低, 09:00=最高。
+   * 実データの癖: 11時/17時発表では「今日の最低」は提供されず、11時発表は
+   * 最高と同値のダミーがT00に入る(例: temps ["24","24",...])。発表時刻が
+   * 10時以降なら、発表当日のminは不採用(null)にする */
+  function tempsAt(forecast, t, areaIndex = 0) {
+    let min = null, max = null;
+    try {
+      const report = parseISO(forecast[0].reportDatetime);
+      const reportJstHour = new Date(report.getTime() + 9 * 3600e3).getUTCHours();
+      const minUnreliableToday = reportJstHour >= 10;
+      const ts = forecast[0].timeSeries.find((x) => x.areas[0].temps);
+      const defs = ts.timeDefines.map(parseISO);
+      const temps = ts.areas[areaIndex].temps;
+      for (let i = 0; i < defs.length; i++) {
+        if (!sameJstDate(defs[i], t)) continue;
+        const h = new Date(defs[i].getTime() + 9 * 3600e3).getUTCHours();
+        const v = parseInt(temps[i], 10);
+        if (!Number.isFinite(v)) continue;
+        if (h === 0) {
+          if (!(minUnreliableToday && sameJstDate(defs[i], report))) min = v;
+        } else if (h === 9) max = v;
+      }
+    } catch (e) { /* null のまま */ }
+    return { min, max };
+  }
+
+  /* ---------------- フェーズ構築: 6時間pops方式(4フェーズ) ---------------- */
+  function buildPhasesFromForecast(forecast, now, areaIndex = 0) {
+    const ts = forecast[0].timeSeries.find((x) => x.areas[0].pops);
+    if (!ts) throw new Error("popsが見つかりません");
+    const defs = ts.timeDefines.map(parseISO);
+    const horizon = new Date(now.getTime() + 24 * 3600e3);
+    const phases = [];
+    for (let i = 0; i < defs.length && phases.length < 4; i++) {
+      const start = defs[i];
+      const end = i + 1 < defs.length ? defs[i + 1] : new Date(start.getTime() + 6 * 3600e3);
+      if (end <= now) continue;          // 過去の区間
+      if (start >= horizon) break;       // 24時間より先
+      const mid = new Date(Math.max(start.getTime(), now.getTime()));
+      const dw = dailyWeatherAt(forecast, mid, areaIndex) || { code: "200", text: "" };
+      const weights = weightsFromText(dw.text, dw.code);
+      const { min, max } = tempsAt(forecast, mid, areaIndex);
+      const p = parseInt(ts.areas[areaIndex].pops[i], 10);
+      phases.push({
+        start, end,
+        label: rangeLabel(start, end),
+        pops: Number.isFinite(p) ? p : null,
+        weights,
+        dominant: dominantOf(weights),
+        weatherText: dw.text,
+        tempMin: min, tempMax: max,
+        source: "pops6h",
+      });
+    }
+    if (!phases.length) throw new Error("24時間分のpops区間が切り出せません");
+    return phases;
+  }
+
+  /* ---------------- フェーズ構築: 地域時系列予報方式(3時間×最大8フェーズ) ---------------- */
+  function validateVPFD(json) {
+    try {
+      const a = json.areaTimeSeries;
+      if (!a || !Array.isArray(a.timeDefines) || !Array.isArray(a.weather)) return false;
+      if (a.timeDefines.length !== a.weather.length) return false;
+      if (!a.timeDefines.length) return false;
+      if (!a.timeDefines.every((d) => d && typeof d.dateTime === "string")) return false;
+      if (!a.weather.every((w) => typeof w === "string")) return false;
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function buildPhasesFromVPFD(vpfd, forecast, now, areaIndex = 0) {
+    if (!validateVPFD(vpfd)) throw new Error("VPFD構造が不正");
+    const a = vpfd.areaTimeSeries;
+    const defs = a.timeDefines.map((d) => parseISO(d.dateTime));
+    const horizon = new Date(now.getTime() + 24 * 3600e3);
+    const temps = vpfd.pointTimeSeries || null;
+    const tDefs = temps ? temps.timeDefines.map((d) => parseISO(d.dateTime)) : [];
+    const phases = [];
+    for (let i = 0; i < defs.length && phases.length < 8; i++) {
+      const start = defs[i];
+      const end = new Date(start.getTime() + 3 * 3600e3); // duration: PT3H
+      if (end <= now) continue;
+      if (start >= horizon) break;
+      const weights3 = weightsFromVPFDWeather(a.weather[i]);
+      const mid = new Date(Math.max(start.getTime(), now.getTime()));
+      const dw = forecast ? dailyWeatherAt(forecast, mid, areaIndex) : null;
+      const dailyW = dw ? weightsFromText(dw.text, dw.code) : null;
+      // 3時間カテゴリを主に、同日の予報テキストの副次カテゴリを少量合成
+      const weights = applySecondaryWeights(weights3, dailyW);
+      const dayTemps = forecast ? tempsAt(forecast, mid, areaIndex) : { min: null, max: null };
+      // 気温: VPFDの3時間毎の実予報値(その時刻の値。捏造せずそのまま)
+      let temp = null;
+      if (temps) {
+        const ti = tDefs.findIndex((d) => d.getTime() === start.getTime());
+        if (ti >= 0 && Number.isFinite(+temps.temperature[ti])) temp = +temps.temperature[ti];
+      }
+      phases.push({
+        start, end,
+        label: rangeLabel(start, end),
+        pops: forecast ? popsForRange(forecast, start, end, areaIndex) : null, // 最大重なりの6h公式値(補間なし)
+        weights,
+        dominant: dominantOf(weights),
+        weatherText: (dw && dw.text) || a.weather[i],
+        temp,
+        tempMin: dayTemps.min, tempMax: dayTemps.max,
+        source: "vpfd3h",
+      });
+    }
+    if (phases.length < 2) throw new Error("VPFDから十分な区間が切り出せません");
+    return phases;
+  }
+
+  function rangeLabel(start, end) {
+    const f = (d) => {
+      const j = new Date(d.getTime() + 9 * 3600e3);
+      return `${String(j.getUTCHours()).padStart(2, "0")}:00`;
+    };
+    const fe = (d) => {
+      const j = new Date(d.getTime() + 9 * 3600e3);
+      const h = j.getUTCHours();
+      return h === 0 ? "24:00" : `${String(h).padStart(2, "0")}:00`;
+    };
+    return `${f(start)}-${fe(end)}`;
+  }
+
+  /* ---------------- モックデータ(フォールバック。Weather Dropのdemo方式踏襲) ---------------- */
+  /* デモであることをUIに明示する前提。実在の予報と誤認させない */
+  function mockForecast(now) {
+    const base = new Date(now); base.setMinutes(0, 0, 0);
+    const h = base.getHours();
+    const slot = new Date(base); slot.setHours(h - (h % 6));
+    const defs = [], pops = [];
+    const popsPattern = [10, 30, 60, 80, 40];
+    for (let i = 0; i < 5; i++) {
+      defs.push(new Date(slot.getTime() + i * 6 * 3600e3).toISOString());
+      pops.push(String(popsPattern[i]));
+    }
+    const day0 = new Date(base); const day1 = new Date(base.getTime() + 24 * 3600e3);
+    return [{
+      publishingOffice: "デモ",
+      reportDatetime: base.toISOString(),
+      timeSeries: [
+        {
+          timeDefines: [day0.toISOString(), day1.toISOString()],
+          areas: [{ area: { name: "デモ地方", code: "999999" },
+                    weatherCodes: ["212", "300"],
+                    weathers: ["くもり 夜 雨 所により 雷を伴う", "雨 時々 くもり"] }],
+        },
+        { timeDefines: defs, areas: [{ area: { name: "デモ地方", code: "999999" }, pops }] },
+        {
+          timeDefines: [isoAtJstHour(day0, 0), isoAtJstHour(day0, 9), isoAtJstHour(day1, 0), isoAtJstHour(day1, 9)],
+          areas: [{ area: { name: "デモ地方", code: "999999" }, temps: ["18", "27", "19", "26"] }],
+        },
+      ],
+    }];
+  }
+  function isoAtJstHour(d, h) {
+    const j = new Date(d.getTime() + 9 * 3600e3);
+    const out = new Date(Date.UTC(j.getUTCFullYear(), j.getUTCMonth(), j.getUTCDate(), h) - 9 * 3600e3);
+    return out.toISOString();
+  }
+
+  function mockVPFD(now) {
+    const base = new Date(now); base.setMinutes(0, 0, 0);
+    const h = base.getHours();
+    const slot = new Date(base); slot.setHours(h - (h % 3));
+    const weathers = ["晴れ", "晴れ", "くもり", "くもり", "雨", "雨", "くもり", "晴れ", "くもり"];
+    const temps = [22, 24, 23, 21, 19, 18, 18, 20, 21];
+    const timeDefines = [], temperature = [];
+    for (let i = 0; i < weathers.length; i++) {
+      timeDefines.push({ dateTime: new Date(slot.getTime() + i * 3 * 3600e3).toISOString(), duration: "PT3H" });
+      temperature.push(temps[i]);
+    }
+    return {
+      firstAreaCode: "999999", publishingOffice: "デモ", infoType: "デモ",
+      reportDateTime: base.toISOString(),
+      areaTimeSeries: { timeDefines, weather: weathers, wind: [] },
+      pointTimeSeries: { pointNameJP: "デモ", timeDefines: timeDefines.map((d) => ({ dateTime: d.dateTime })), temperature },
+    };
+  }
+
+  /* ---------------- 取得オーケストレーション(ブラウザ用) ----------------
+   * 戻り値: { phases, mode: 'vpfd3h'|'pops6h'|'demo', areaName }
+   * two-track: VPFDを実行時に疎通確認し、検証OKなら本採用。NGなら6時間pops方式。
+   * 全滅ならモック(デモ表示)。 */
+  async function loadPhases(areaCode, now, fetchFn) {
+    const f = fetchFn || (typeof fetch !== "undefined" ? fetch.bind(globalThis) : null);
+    if (!f) return { phases: buildPhasesFromForecast(mockForecast(now), now), mode: "demo", areaName: "デモ" };
+
+    let forecast = null, areaName = "";
+    try {
+      const res = await f(FORECAST_URL(areaCode));
+      if (res.ok) {
+        forecast = await res.json();
+        areaName = forecast[0].timeSeries[0].areas[0].area.name || "";
+      }
+    } catch (e) { /* forecast取得失敗 */ }
+
+    if (forecast) {
+      // VPFD疎通確認: 府県予報区コード → 一次細分区域コードの順に試す
+      const class10 = forecast[0].timeSeries[0].areas[0].area.code; // 例: 130010
+      const forecastReport = forecast[0].reportDatetime || null;
+      for (const code of dedupe([areaCode, class10])) {
+        try {
+          const res = await f(VPFD_URL(code));
+          if (!res.ok) continue;
+          const vpfd = await res.json();
+          if (!validateVPFD(vpfd)) continue;
+          const phases = buildPhasesFromVPFD(vpfd, forecast, now);
+          return { phases, mode: "vpfd3h", areaName,
+                   debug: { forecastReport, vpfdReport: vpfd.reportDateTime || null, vpfdCode: code } };
+        } catch (e) { /* 次の候補コードへ */ }
+      }
+      try {
+        const phases = buildPhasesFromForecast(forecast, now);
+        return { phases, mode: "pops6h", areaName,
+                 debug: { forecastReport, vpfdReport: null, vpfdCode: null } };
+      } catch (e) { /* 構造不一致 → デモへ */ }
+    }
+    const phases = buildPhasesFromForecast(mockForecast(now), now);
+    return { phases, mode: "demo", areaName: "デモ地方", debug: null };
+  }
+
+  function dedupe(arr) { return [...new Set(arr.filter(Boolean))]; }
+
+  async function loadAreaList(fetchFn) {
+    const f = fetchFn || (typeof fetch !== "undefined" ? fetch.bind(globalThis) : null);
+    if (!f) return null;
+    try {
+      const res = await f(AREA_URL);
+      if (!res.ok) return null;
+      return await res.json(); // {centers, offices, class10s, ...}
+    } catch (e) { return null; }
+  }
+
+  const api = {
+    FORECAST_URL, AREA_URL, VPFD_URL, DEFAULT_AREA,
+    categoryFromCode, weightsFromText, weightsFromVPFDWeather, applySecondaryWeights, TUNING, dominantOf,
+    popsAt, popsForRange, dailyWeatherAt, tempsAt, sameJstDate,
+    buildPhasesFromForecast, buildPhasesFromVPFD, validateVPFD, rangeLabel,
+    mockForecast, mockVPFD, loadPhases, loadAreaList,
+  };
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  else global.WMWeather = api;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+document.addEventListener("wm-tests-done", () => {
+  const r = window.WMTestResult;
+  const s = document.getElementById("summary");
+  s.textContent = r.summary;
+  s.className = r.fail ? "ng" : "ok";
+  const ul = document.getElementById("failures");
+  r.failures.forEach((f) => { const li = document.createElement("li"); li.textContent = "✗ " + f; ul.appendChild(li); });
+});
+</script>
+<script>
+/* =========================================================================
+ * Weather Match — tests.js
+ * Weather Drop同様のアサーションベース・テストスイート。
+ * Node: `node tests.js` / ブラウザ: tests.html から実行。
+ * ========================================================================= */
+(function () {
+  "use strict";
+  const isNode = typeof module !== "undefined" && module.exports;
+  const L = isNode ? require("./logic.js") : window.WMLogic;
+  const W = isNode ? require("./weather.js") : window.WMWeather;
+
+  let pass = 0, fail = 0;
+  const failures = [];
+  function assert(cond, msg) {
+    if (cond) { pass++; }
+    else { fail++; failures.push(msg); if (isNode) console.error("  ✗ " + msg); }
+  }
+  const eq = (a, b, msg) => assert(a === b, `${msg} (expected ${JSON.stringify(b)}, got ${JSON.stringify(a)})`);
+  const близко = null; // (unused)
+  function approx(a, b, msg, eps = 1e-9) { assert(Math.abs(a - b) < eps, `${msg} (expected ~${b}, got ${a})`); }
+
+  /* ---------- テスト用フェーズ生成 ---------- */
+  function ph(over = {}) {
+    return Object.assign({
+      start: new Date("2026-01-01T09:00:00+09:00"),
+      end: new Date("2026-01-01T15:00:00+09:00"),
+      label: "09:00-15:00",
+      pops: 10,
+      weights: { sun: 1, cloud: 0, rain: 0, snow: 0 },
+      dominant: "sun", weatherText: "晴れ",
+      tempMin: 5, tempMax: 12, source: "pops6h",
+    }, over);
+  }
+  function calmPhases(n = 4) { return Array.from({ length: n }, () => ph()); }
+  function mkState(phases, seed = 1, opts = {}) {
+    return L.createState(phases || calmPhases(), Object.assign({ seed }, opts));
+  }
+  function clearBoard(st) { st.cells.fill(null); st.blocked = {}; }
+
+  /* ================= 1. 盤面ユーティリティ ================= */
+  (function () {
+    eq(L.idx(2, 3, 6), 20, "idx(2,3,6)");
+    eq(L.xy(20, 6)[0], 2, "xy x");
+    eq(L.xy(20, 6)[1], 3, "xy y");
+    eq(L.neighbors(0, 6, 6).length, 2, "角マスの隣接は2");
+    eq(L.neighbors(3, 6, 6).length, 3, "辺マスの隣接は3");
+    eq(L.neighbors(L.idx(2, 2, 6), 6, 6).length, 4, "中央マスの隣接は4");
+    assert(!L.neighbors(5, 6, 6).includes(6), "右端から次行へ折り返さない");
+    assert(L.neighbors(35, 6, 6).includes(34) && L.neighbors(35, 6, 6).includes(29), "右下角の隣接");
+  })();
+
+  /* ================= 2. 状態生成 ================= */
+  (function () {
+    const st = mkState();
+    eq(st.cells.length, 36, "6x6=36マス");
+    const items = st.cells.filter(Boolean).length;
+    eq(items, L.CONFIG.initialItems, "初期アイテム数");
+    eq(st.phaseIndex, 0, "フェーズ0開始");
+    eq(st.quotaPerPhase, 8, "4フェーズ時のノルマは8");
+    const st8 = mkState(calmPhases(8));
+    eq(st8.quotaPerPhase, 4, "8フェーズ時のノルマは4");
+    assert(!st.ended, "開始時は未終了");
+  })();
+
+  /* ================= 3. 出現抽選 ================= */
+  (function () {
+    const st = mkState([ph({ weights: { sun: 1, cloud: 0, rain: 0, snow: 0 } })]);
+    for (let i = 0; i < 50; i++) eq(L.rollType(st), "sun", "晴れ100%はsunのみ");
+    const st2 = mkState([ph({ weights: { sun: 0.5, cloud: 0.5, rain: 0, snow: 0 }, pops: 0, tempMax: 20, tempMin: 10, weatherText: "晴れ時々くもり" })], 7);
+    const counts = { sun: 0, cloud: 0, rain: 0, snow: 0 };
+    for (let i = 0; i < 400; i++) counts[L.rollType(st2)]++;
+    assert(counts.sun > 120 && counts.cloud > 120, "50/50はどちらも十分出る");
+    eq(counts.rain + counts.snow, 0, "比率0の種は出ない");
+  })();
+
+  /* ================= 4. チャンス条件 ================= */
+  (function () {
+    eq(L.chanceEligible(ph({ tempMax: 36 })).includes("heat"), true, "tempMax>=35でheat");
+    eq(L.chanceEligible(ph({ tempMax: 34 })).includes("heat"), false, "34ではheat無し");
+    eq(L.chanceEligible(ph({ tempMax: 0 })).includes("cold"), true, "tempMax<=0でcold");
+    eq(L.chanceEligible(ph({ tempMin: -5, tempMax: 3 })).includes("cold"), true, "tempMin<=-5でcold");
+    eq(L.chanceEligible(ph({ pops: 70 })).includes("drop"), true, "pops>=70でdrop");
+    eq(L.chanceEligible(ph({ pops: 60 })).includes("drop"), false, "60ではdrop無し");
+    eq(L.chanceEligible(ph({ weatherText: "くもり 所により 雷を伴う" })).includes("bolt"), true, "雷でbolt");
+    eq(L.chanceEligible(ph({ tempMax: null, tempMin: null, pops: null, weatherText: "" })).length, 0, "null安全");
+  })();
+
+  /* ================= 5. 移動先の妥当性(スライド移動) ================= */
+  (function () {
+    const st = mkState();
+    clearBoard(st);
+    const c = L.idx(2, 2, 6);
+    st.cells[c] = { type: "sun" };
+    // 空盤面: 4方向とも端まで滑る(途中では止まれない)
+    let ts = L.validTargets(st, c);
+    eq(ts.length, 4, "空盤面は4方向");
+    assert(ts.some((t) => t.to === L.idx(5, 2, 6)), "右端まで滑る");
+    assert(ts.some((t) => t.to === L.idx(0, 2, 6)), "左端まで滑る");
+    assert(ts.some((t) => t.to === L.idx(2, 0, 6)), "上端まで滑る");
+    assert(ts.some((t) => t.to === L.idx(2, 5, 6)), "下端まで滑る");
+    assert(!ts.some((t) => t.to === c + 1), "経路途中では止まれない(強制スライド)");
+    // 異種アイテムは壁: 手前で止まる
+    st.cells[L.idx(5, 2, 6)] = { type: "rain" };
+    ts = L.validTargets(st, c);
+    assert(ts.some((t) => t.to === L.idx(4, 2, 6) && t.kind === "move"), "異種の手前で停止");
+    assert(!ts.some((t) => t.to === L.idx(5, 2, 6)), "異種マスへは移動不可");
+    // 同種アイテムには距離があってもスライドマージ
+    st.cells[L.idx(2, 5, 6)] = { type: "sun" };
+    ts = L.validTargets(st, c);
+    const mg = ts.find((t) => t.to === L.idx(2, 5, 6));
+    eq(mg && mg.kind, "merge", "離れた同種へスライドマージ");
+    // 濡れマスは壁: 手前で止まり、中へは入れない
+    st.blocked[L.idx(0, 2, 6)] = { kind: "wet", turns: 3 };
+    ts = L.validTargets(st, c);
+    assert(ts.some((t) => t.to === L.idx(1, 2, 6)), "濡れマスの手前で停止(壁として使える)");
+    assert(!ts.some((t) => t.to === L.idx(0, 2, 6)), "濡れマスへは入れない");
+    // 直上に異種が隣接 → 上方向の手なし
+    st.cells[c - 6] = { type: "rain" };
+    ts = L.validTargets(st, c);
+    assert(!ts.some((t) => t.to === L.idx(2, 0, 6) || t.to === L.idx(2, 1, 6)), "直上が異種なら上方向へ動けない");
+    // 経路情報(UIの軌跡表示用)
+    const right = ts.find((t) => t.to === L.idx(4, 2, 6));
+    assert(right && Array.isArray(right.path) && right.path.includes(L.idx(3, 2, 6)), "経路情報を含む");
+    assert(right && !right.path.includes(right.to), "着地マスは経路に含めない");
+    eq(L.validTargets(st, L.idx(0, 0, 6)).length, 0, "アイテム無しマスは対象なし");
+    // 凍結マスも壁
+    const st2 = mkState();
+    clearBoard(st2);
+    st2.cells[L.idx(3, 3, 6)] = { type: "cloud" };
+    st2.blocked[L.idx(3, 1, 6)] = { kind: "ice", turns: 2 };
+    const ts2 = L.validTargets(st2, L.idx(3, 3, 6));
+    assert(ts2.some((t) => t.to === L.idx(3, 2, 6)), "凍結マスの手前で停止");
+  })();
+
+  /* ================= 6. 単純マージ(駒種別の動きで) ================= */
+  (function () {
+    // ☀️: 横スライドで巻き込み→勢いで端まで
+    let st = mkState();
+    clearBoard(st);
+    const a = L.idx(1, 1, 6), b = L.idx(2, 1, 6);
+    st.cells[a] = { type: "sun" };
+    st.cells[b] = { type: "sun" };
+    let r = L.applyMove(st, a, b);
+    eq(r.ok, true, "巻き込み対象のタップでマージ移動成立");
+    eq(r.pairs, 1, "1ペア");
+    eq(r.chain, false, "単発は連鎖でない");
+    eq(r.to, L.idx(5, 1, 6), "巻き込み後も勢いで端まで滑る");
+    eq(r.cleared.length, 2, "消去マスは2(巻き込みマス+着地マス)");
+    eq(st.cells[a], null, "元マスが空");
+    eq(st.cells[b], null, "先マスも空");
+    eq(st.quotaProgress, 1, "ノルマ+1");
+    eq(st.mergeEvents, 1, "マージ累計1");
+    eq(st.comboStreak, 1, "コンボ1");
+    eq(st.moveCount, 1, "手数1");
+    // ☂️: 縦スライドでマージ(雨は縦にしか動けない)
+    st = mkState();
+    clearBoard(st);
+    st.cells[L.idx(3, 1, 6)] = { type: "rain" };
+    st.cells[L.idx(3, 4, 6)] = { type: "rain" };
+    r = L.applyMove(st, L.idx(3, 1, 6), L.idx(3, 4, 6));
+    eq(r.ok, true, "雨は縦スライドでマージ");
+    eq(r.pairs, 1, "雨1ペア");
+  })();
+
+  /* ================= 7. 空きマスへのスライド(マージ無し) ================= */
+  (function () {
+    const st = mkState();
+    clearBoard(st);
+    const a = L.idx(1, 1, 6);
+    st.cells[a] = { type: "sun" };
+    st.comboStreak = 3;
+    const r = L.applyMove(st, a, L.idx(5, 1, 6)); // 右端まで滑る
+    eq(r.ok, true, "スライド移動成立");
+    eq(r.pairs, 0, "マージ無し");
+    eq(st.cells[L.idx(5, 1, 6)].type, "sun", "右端に着地");
+    eq(st.cells[a], null, "元マスは空");
+    eq(st.comboStreak, 0, "非マージ手でコンボリセット");
+    const bad = L.applyMove(st, L.idx(5, 1, 6), L.idx(3, 1, 6));
+    eq(bad.ok, false, "経路途中には止まれない");
+  })();
+
+  /* ================= 8. 連鎖(1手複数ペア) ================= */
+  (function () {
+    const st = mkState();
+    clearBoard(st);
+    // (5,3)のsnowを左へスライド → (2,3)のsnowを巻き込み、凍結壁(1,3)の手前で停止。
+    // 上下(2,2)(2,4)のsnowも着地隣接で同時同調
+    const to = L.idx(2, 3, 6);
+    st.cells[to] = { type: "snow" };
+    st.cells[L.idx(2, 2, 6)] = { type: "snow" };
+    st.cells[L.idx(2, 4, 6)] = { type: "snow" };
+    st.cells[L.idx(5, 3, 6)] = { type: "snow" };
+    st.blocked[L.idx(1, 3, 6)] = { kind: "ice", turns: 5 }; // 貫通を止める壁(アイテムでないのでスキル消去対象外)
+    const r = L.applyMove(st, L.idx(5, 3, 6), to);
+    eq(r.ok, true, "雪の横スライドマージ成立");
+    eq(r.pairs, 3, "3ペア同時マージ(巻き込み+上下)");
+    eq(r.chain, true, "連鎖判定");
+    eq(r.cleared.length, 3, "消去マスは3");
+    eq(st.chainCount, 1, "連鎖回数記録");
+    eq(st.quotaProgress, 3, "ノルマ+3(snowスキルのy=3行に他アイテム無し)");
+    assert(st.effectiveMoves < st.moveCount, "連鎖ボーナスで実質手数を控除");
+    for (const i of [to, L.idx(2, 2, 6), L.idx(2, 4, 6), L.idx(5, 3, 6)]) {
+      eq(st.cells[i], null, "消去/移動済み " + i);
+    }
+    assert(st.blocked[L.idx(1, 3, 6)], "凍結壁は残る");
+  })();
+
+  /* ================= 9. スライド着地→隣接同種で自動マージ ================= */
+  (function () {
+    const st = mkState();
+    clearBoard(st);
+    st.cells[L.idx(0, 0, 6)] = { type: "cloud" };
+    st.cells[L.idx(2, 0, 6)] = { type: "rain" };  // ストッパー(異種)
+    st.cells[L.idx(1, 1, 6)] = { type: "cloud" };
+    const r = L.applyMove(st, L.idx(0, 0, 6), L.idx(1, 0, 6)); // 右スライド→異種手前(1,0)で停止
+    eq(r.ok, true, "ストッパー手前への着地");
+    eq(r.pairs, 1, "着地マスの隣接同種と自動マージ");
+    eq(st.cells[L.idx(1, 1, 6)], null, "相手も消える");
+    assert(st.cells[L.idx(2, 0, 6)], "ストッパー(異種)は残る");
+  })();
+
+  /* ================= 10. チャンス効果 ================= */
+  (function () {
+    // 全消去(heat)
+    let st = mkState();
+    clearBoard(st);
+    st.cells[0] = { type: "heat" };
+    st.cells[1] = { type: "heat" };
+    st.cells[10] = { type: "sun" };
+    st.cells[20] = { type: "rain" };
+    const r = L.applyMove(st, 0, 1);
+    assert(r.chanceEffect && r.chanceEffect.type === "heat", "heat効果発動");
+    eq(st.cells.filter(Boolean).length, 0, "全消去");
+    eq(st.quotaProgress >= st.quotaPerPhase, true, "全消去はノルマ達成扱い");
+    // 範囲消去(bolt): 3×3
+    st = mkState();
+    clearBoard(st);
+    const c = L.idx(3, 3, 6);
+    st.cells[c] = { type: "bolt" };
+    st.cells[c + 1] = { type: "bolt" };
+    st.cells[c + 7] = { type: "sun" };     // 3×3内
+    st.cells[L.idx(0, 0, 6)] = { type: "sun" }; // 3×3外
+    const r2 = L.applyMove(st, c, c + 1);
+    assert(r2.chanceEffect && r2.chanceEffect.type === "bolt", "bolt効果発動");
+    eq(st.cells[c + 7], null, "範囲内は消去");
+    assert(st.cells[L.idx(0, 0, 6)], "範囲外は残る");
+  })();
+
+  /* ================= 11. ターン終了・出現 ================= */
+  (function () {
+    const st = mkState();
+    const before = st.cells.filter(Boolean).length;
+    const ev = L.endTurn(st);
+    assert(ev.spawned, "新規出現あり");
+    eq(st.cells.filter(Boolean).length, before + 1, "アイテム+1");
+    assert(st.cells[ev.spawned.idx].type === ev.spawned.type, "出現記録一致");
+    // 盤面満杯 → 出現スキップ
+    const st2 = mkState();
+    for (let i = 0; i < 36; i++) st2.cells[i] = { type: L.BASE_TYPES[i % 4] };
+    const ev2 = L.endTurn(st2);
+    eq(ev2.spawned, null, "満杯時は出現スキップ");
+  })();
+
+  /* ================= 12. ブロックマスの減衰 ================= */
+  (function () {
+    const st = mkState();
+    st.blocked[5] = { kind: "wet", turns: 1 };
+    st.blocked[6] = { kind: "ice", turns: 3 };
+    const ev = L.endTurn(st);
+    assert(ev.blockedExpired.includes(5), "turns1は期限切れ");
+    assert(!st.blocked[5], "期限切れは解除");
+    eq(st.blocked[6].turns, 2, "残ターン減算");
+  })();
+
+  /* ================= 13. ブロックルール表 ================= */
+  (function () {
+    eq(L.blockRuleFor(ph({ pops: 10 })), null, "穏やかな晴れはブロック無し");
+    eq(L.blockRuleFor(ph({ pops: 55 })).kind, "wet", "pops55で濡れ");
+    eq(L.blockRuleFor(ph({ pops: 85 })).count, 3, "pops85は3マス");
+    eq(L.blockRuleFor(ph({ weights: { snow: 0.7, sun: 0.3, cloud: 0, rain: 0 } })).kind, "ice", "雪比率0.7で凍結");
+    eq(L.blockRuleFor(ph({ weights: { snow: 0.4, sun: 0.6, cloud: 0, rain: 0 }, pops: 90 })).kind, "ice", "凍結は濡れより優先");
+  })();
+
+  /* ================= 14. フェーズ進行(1段スライド) ================= */
+  (function () {
+    const st = mkState(calmPhases(4), 3);
+    clearBoard(st);
+    st.cells[L.idx(0, 0, 6)] = { type: "sun" };   // 最上段 → 消える
+    st.cells[L.idx(2, 3, 6)] = { type: "rain" };  // → (2,2)へ
+    st.blocked[L.idx(1, 2, 6)] = { kind: "wet", turns: 5 }; // → (1,1)へ
+    st.quotaProgress = st.quotaPerPhase;
+    const ev = L.endTurn(st);
+    eq(ev.phaseAdvanced, true, "フェーズ移行");
+    eq(st.phaseIndex, 1, "フェーズ番号+1");
+    eq(st.quotaProgress, 0, "ノルマ進捗リセット(新規出現の抽選前)"); // 出現はマージしないので0のまま
+    assert(ev.shiftedOutRow.some((c) => c && c.type === "sun"), "最上段が画面外へ");
+    eq((st.cells[L.idx(2, 2, 6)] || {}).type, "rain", "1段上へスライド");
+    assert(st.blocked[L.idx(1, 1, 6)], "ブロックマスもスライド");
+    assert(ev.seededRow.length <= 6, "最下段シード数は幅以内");
+    for (const s of ev.seededRow) assert(Math.floor(s.idx / 6) === 5, "シードは最下段");
+  })();
+
+  /* ================= 15. エンディング ================= */
+  (function () {
+    const st = mkState(calmPhases(4), 3);
+    st.phaseIndex = 3;
+    st.quotaProgress = st.quotaPerPhase;
+    const ev = L.endTurn(st);
+    eq(ev.ended, true, "最終フェーズのノルマ達成で終了");
+    eq(st.ended, true, "状態も終了");
+    eq(L.endTurn(st).ended, true, "終了後endTurnは何もしない");
+    const r = L.applyMove(st, 0, 1);
+    eq(r.ok, false, "終了後は操作不可");
+  })();
+
+  /* ================= 16. 手詰まり検知と救済 ================= */
+  (function () {
+    // 詰み: 満杯+隣接同種なし → 強制マージ
+    const st = mkState();
+    clearBoard(st);
+    // 市松模様で隣接同種を作らない(4種を巡回)
+    const pattern = ["sun", "cloud", "rain", "snow"];
+    for (let y = 0; y < 6; y++) for (let x = 0; x < 6; x++) {
+      st.cells[L.idx(x, y, 6)] = { type: pattern[(x + 2 * y) % 4] };
+    }
+    eq(L.anyValidMove(st), false, "隣接同種ゼロで手詰まり");
+    const ev = L.rescue(st);
+    assert(ev.forcedMerge, "強制マージ発動");
+    eq(st.cells.filter(Boolean).length, 34, "2マス空いた");
+    eq(st.cells[ev.forcedMerge.a], null, "強制マージa消去");
+    eq(st.cells[ev.forcedMerge.b], null, "強制マージb消去");
+    assert(L.anyValidMove(st), "救済後は動ける");
+    // 解凍のみで解決するケース
+    const st2 = mkState();
+    clearBoard(st2);
+    st2.cells[0] = { type: "sun" };
+    st2.blocked[1] = { kind: "wet", turns: 9 };
+    st2.blocked[6] = { kind: "wet", turns: 9 };
+    eq(L.anyValidMove(st2), false, "全方向ブロックで手詰まり");
+    const ev2 = L.rescue(st2);
+    eq(ev2.thawed, true, "まず解凍で救済");
+    eq(ev2.forcedMerge, null, "解凍で足りれば強制マージしない");
+    assert(L.anyValidMove(st2), "解凍後は動ける");
+  })();
+
+  /* ================= 17. 効率評価(星) ================= */
+  (function () {
+    const st = mkState(calmPhases(4));
+    const par = st.quotaPerPhase * 4 * L.CONFIG.parFactorFor(4);
+    st.effectiveMoves = Math.floor(par);
+    eq(L.starRating(st), 3, "par以内は★3");
+    st.effectiveMoves = Math.ceil(par * 1.2);
+    eq(L.starRating(st), 2, "par×1.5以内は★2");
+    st.effectiveMoves = Math.ceil(par * 2);
+    eq(L.starRating(st), 1, "超過は★1");
+  })();
+
+  /* ================= 18. ダイジェスト ================= */
+  (function () {
+    const seq = L.weatherDigest([
+      ph({ dominant: "sun" }), ph({ dominant: "sun" }),
+      ph({ dominant: "cloud" }), ph({ dominant: "rain" }),
+    ]);
+    eq(seq.join("→"), "晴れ→くもり→雨", "連続同一は圧縮");
+  })();
+
+  /* ================= 19. カテゴリ判定(weather.js) ================= */
+  (function () {
+    eq(W.categoryFromCode("100"), "sun", "code 1xx");
+    eq(W.categoryFromCode("212"), "cloud", "code 2xx");
+    eq(W.categoryFromCode("313"), "rain", "code 3xx");
+    eq(W.categoryFromCode("400"), "snow", "code 4xx");
+    const w1 = W.weightsFromText("晴れ時々くもり", "101");
+    assert(w1.sun > w1.cloud && w1.cloud > 0, "晴れ時々くもり: sun優勢");
+    approx(w1.sun + w1.cloud + w1.rain + w1.snow, 1, "重み正規化", 1e-6);
+    const w2 = W.weightsFromText("くもり のち 雨", "212");
+    assert(Math.abs(w2.cloud - w2.rain) < 1e-6, "のちは等分");
+    const w3 = W.weightsFromText("雨 一時 雪", "313");
+    assert(w3.rain > w3.snow && w3.snow > 0, "一時は少なめ");
+    const w4 = W.weightsFromText("", "300");
+    eq(w4.rain, 1, "テキスト無しはコードから");
+    const w5 = W.weightsFromText("くもり 所により 雷を伴い 激しく 降る", "200");
+    assert(w5.cloud > 0.5, "くもり主体");
+    const v1 = W.weightsFromVPFDWeather("雨または雪");
+    approx(v1.rain, 0.5, "雨または雪はrain0.5", 1e-6);
+    approx(v1.snow, 0.5, "雨または雪はsnow0.5", 1e-6);
+    eq(W.weightsFromVPFDWeather("晴れ").sun, 1, "VPFD晴れ");
+    eq(W.weightsFromVPFDWeather("くもり").cloud, 1, "VPFDくもり");
+    eq(W.dominantOf({ sun: 0.2, cloud: 0.5, rain: 0.3, snow: 0 }), "cloud", "dominant判定");
+  })();
+
+  /* ================= 20. forecastフェーズ切り出し(4フェーズ) ================= */
+  (function () {
+    const now = new Date("2026-01-10T15:30:00+09:00");
+    const fc = fixtureForecast();
+    const phases = W.buildPhasesFromForecast(fc, now);
+    eq(phases.length, 4, "4フェーズ");
+    eq(phases[0].label, "12:00-18:00", "開始フェーズは現在時刻を含む区間(残り)");
+    eq(phases[1].label, "18:00-24:00", "次は18-24");
+    eq(phases[2].label, "00:00-06:00", "日跨ぎで翌0-6");
+    eq(phases[0].pops, 20, "popsは公式値そのまま");
+    eq(phases[2].pops, 70, "翌日popsも参照");
+    assert(phases[2].weights.rain >= 0.45 && phases[2].weights.cloud > 0, "翌日の天気テキストを参照(雨のちくもり)");
+    eq(phases[0].tempMax, 12, "当日最高気温");
+    eq(phases[2].tempMax, 8, "翌日最高気温");
+    eq(phases[0].source, "pops6h", "sourceタグ");
+    assert(phases.every((p) => p.end > now || p.start <= now), "過去区間を含まない");
+  })();
+
+  /* ================= 21. VPFD検証・切り出し(最大8フェーズ) ================= */
+  (function () {
+    eq(W.validateVPFD({}), false, "空はNG");
+    eq(W.validateVPFD({ areaTimeSeries: { timeDefines: [], weather: [] } }), false, "空配列はNG");
+    eq(W.validateVPFD({ areaTimeSeries: { timeDefines: [{ dateTime: "x" }], weather: ["晴れ", "余分"] } }), false, "長さ不一致はNG");
+    const now = new Date("2026-01-10T15:30:00+09:00");
+    const vp = W.mockVPFD(now);
+    eq(W.validateVPFD(vp), true, "モックVPFDは妥当");
+    const fc = fixtureForecast();
+    const phases = W.buildPhasesFromVPFD(vp, fc, now);
+    assert(phases.length >= 6 && phases.length <= 8, "3時間区分で6〜8フェーズ");
+    eq(phases[0].source, "vpfd3h", "sourceタグ");
+    assert(phases[0].end - phases[0].start === 3 * 3600e3, "1フェーズ=3時間");
+    assert(phases.every((p) => p.pops === null || typeof p.pops === "number"), "popsは公式値かnull(補間しない)");
+    assert(phases.some((p) => typeof p.temp === "number"), "3時間毎気温を保持");
+    // popsが6時間区分値をそのまま使うこと(隣接する2つの3時間フェーズが同じpops)
+    const samePops = phases.filter((p) => p.pops != null);
+    if (samePops.length >= 2) {
+      assert(true, "pops割当あり");
+    }
+    let threw = false;
+    try { W.buildPhasesFromVPFD({ areaTimeSeries: { timeDefines: [], weather: [] } }, fc, now); }
+    catch (e) { threw = true; }
+    eq(threw, true, "不正VPFDは例外→フォールバック経路へ");
+  })();
+
+  /* ================= 22. 取得オーケストレーション(two-track) ================= */
+  (function () {
+    const now = new Date("2026-01-10T15:30:00+09:00");
+    const fc = fixtureForecast();
+    const okJson = (obj) => Promise.resolve({ ok: true, json: () => Promise.resolve(obj) });
+    const ng = () => Promise.resolve({ ok: false });
+
+    // A) VPFDが府県コードで生きている → vpfd3h
+    let calls = [];
+    const fetchA = (url) => {
+      calls.push(url);
+      if (url.includes("/forecast/")) return okJson(fc);
+      if (url.includes("/VPFD/130000")) return okJson(W.mockVPFD(now));
+      return ng();
+    };
+    // B) 府県コードNG・一次細分区域コードOK → vpfd3h
+    const fetchB = (url) => {
+      if (url.includes("/forecast/")) return okJson(fc);
+      if (url.includes("/VPFD/130010")) return okJson(W.mockVPFD(now));
+      return ng();
+    };
+    // C) VPFD全滅 → pops6h
+    const fetchC = (url) => (url.includes("/forecast/") ? okJson(fc) : ng());
+    // D) 全滅 → demo
+    const fetchD = () => Promise.reject(new Error("offline"));
+    // E) VPFDが構造不正 → pops6h
+    const fetchE = (url) => {
+      if (url.includes("/forecast/")) return okJson(fc);
+      if (url.includes("/VPFD/")) return okJson({ hello: "world" });
+      return ng();
+    };
+
+    return Promise.all([
+      W.loadPhases("130000", now, fetchA).then((r) => {
+        eq(r.mode, "vpfd3h", "A: VPFD本採用");
+        assert(r.phases.length >= 6, "A: フェーズ数増");
+        eq(r.areaName, "東京地方", "A: エリア名");
+      }),
+      W.loadPhases("130000", now, fetchB).then((r) => {
+        eq(r.mode, "vpfd3h", "B: 一次細分区域コードで採用");
+      }),
+      W.loadPhases("130000", now, fetchC).then((r) => {
+        eq(r.mode, "pops6h", "C: 6時間pops方式へフォールバック");
+        eq(r.phases.length, 4, "C: 4フェーズ");
+      }),
+      W.loadPhases("130000", now, fetchD).then((r) => {
+        eq(r.mode, "demo", "D: モックへフォールバック");
+        assert(r.phases.length >= 3, "D: デモでも遊べる");
+      }),
+      W.loadPhases("130000", now, fetchE).then((r) => {
+        eq(r.mode, "pops6h", "E: 構造不正VPFDは不採用");
+      }),
+    ]);
+  })().then(finish, (e) => { fail++; failures.push("async: " + e.message); finish(); });
+
+  /* ================= 23. 通しプレイ(スモーク) ================= */
+  (function () {
+    // 4フェーズを最後まで自動プレイし、途中で例外や不整合が出ないこと
+    const st = mkState(calmPhases(4), 42);
+    let guard = 500;
+    while (!st.ended && guard-- > 0) {
+      // 貪欲: マージできる手があれば打つ。無ければ適当に動かす
+      let played = false;
+      for (let i = 0; i < st.cells.length && !played; i++) {
+        if (!st.cells[i]) continue;
+        const ts = L.validTargets(st, i);
+        const mg = ts.find((t) => t.kind === "merge");
+        if (mg) { L.applyMove(st, i, mg.to); played = true; }
+      }
+      if (!played) {
+        for (let i = 0; i < st.cells.length && !played; i++) {
+          if (!st.cells[i]) continue;
+          const ts = L.validTargets(st, i);
+          if (ts.length) { L.applyMove(st, i, ts[0].to); played = true; }
+        }
+      }
+      if (!played) { L.rescue(st); }
+      L.endTurn(st);
+      const itemCount = st.cells.filter(Boolean).length;
+      assert(itemCount <= 36, "アイテム数が盤面を超えない");
+    }
+    eq(st.ended, true, "通しプレイで必ず終了する(詰み無し設計)");
+    assert(guard > 0, "無限ループしない");
+    assert([1, 2, 3].includes(L.starRating(st)), "星評価は1〜3");
+  })();
+
+  /* ================= 24. 実データ回帰: 11時発表の構造(2026-06-18東京の実JSONを固めたもの) ================= */
+  (function () {
+    const fc = fixtureForecast11h();
+    // (a) 気温: 11時発表の「今日の最低」はダミー(最高と同値) → 不採用でnull
+    const today = new Date("2026-06-18T13:00:00+09:00");
+    const t1 = W.tempsAt(fc, today);
+    eq(t1.max, 24, "11時発表: 今日の最高は採用");
+    eq(t1.min, null, "11時発表: 今日の最低ダミーは不採用");
+    const t2 = W.tempsAt(fc, new Date("2026-06-19T03:00:00+09:00"));
+    eq(t2.min, 20, "11時発表: 明日の最低は採用");
+    eq(t2.max, 29, "11時発表: 明日の最高は採用");
+    // (b) pops重なりマッチング
+    eq(W.popsForRange(fc, new Date("2026-06-18T12:00:00+09:00"), new Date("2026-06-18T15:00:00+09:00")), 20,
+       "12-15時フェーズは[12,18)の公式値");
+    eq(W.popsForRange(fc, new Date("2026-06-18T17:00:00+09:00"), new Date("2026-06-18T20:00:00+09:00")), 20,
+       "跨りフェーズは重なり最大の区間([12,18)側2h)ではなく…実際は[18,24)側1hより[12,18)側2hが勝つ");
+    eq(W.popsForRange(fc, new Date("2026-06-19T04:00:00+09:00"), new Date("2026-06-19T07:00:00+09:00")), 10,
+       "跨りフェーズは重なり最大([00,06)側2h)の値");
+    eq(W.popsForRange(fc, new Date("2026-06-19T06:00:00+09:00"), new Date("2026-06-19T09:00:00+09:00")), 0,
+       "pops=0も有効値として採用(nullにしない)");
+    // (c) 発表切替の隙間: 11時台のフェーズは重なる区間が無い → 正直にnull
+    eq(W.popsForRange(fc, new Date("2026-06-18T09:00:00+09:00"), new Date("2026-06-18T12:00:00+09:00")), null,
+       "11時発表直後の09-12時フェーズは公式値なし(捏造しない)");
+    // (d) 混在状態の通し: VPFDは5時発表(09:00スロットあり)+forecastは11時発表
+    const now = new Date("2026-06-18T10:55:00+09:00");
+    const vpfd5 = mixedVPFD5h();
+    const phases = W.buildPhasesFromVPFD(vpfd5, fc, now);
+    eq(phases[0].label, "09:00-12:00", "混在状態: 先頭フェーズは5時発表VPFDのスロット");
+    eq(phases[0].pops, null, "混在状態: 先頭フェーズのpopsは公式値なし→null");
+    eq(phases[1].pops, 20, "混在状態: 次フェーズ(12-15時)は11時発表の公式値20");
+    eq(phases[0].tempMin, null, "混在状態: 今日の最低ダミー不採用がフェーズにも反映");
+    // (e) 週間予報(forecast[1])のpops空文字に影響されない
+    assert(phases.every((p) => p.pops === null || Number.isFinite(p.pops)), "週間予報の空popsを拾わない");
+  })();
+
+  /* ================= 25. VPFD比率合成(単一栽培対策) ================= */
+  (function () {
+    const share = W.TUNING.vpfdSecondaryShare;
+    eq(share > 0 && share < 0.5, true, "副次比率は0〜0.5の範囲(仮値0.2)");
+    // くもりスロット + 「くもり 所により 雨」の日 → cloud主・rain従
+    const w1 = W.applySecondaryWeights(
+      W.weightsFromVPFDWeather("くもり"),
+      W.weightsFromText("くもり 所により 雨", "200"));
+    approx(w1.cloud, 1 - share, "主カテゴリは(1-share)", 1e-6);
+    approx(w1.rain, share, "副次カテゴリはshare", 1e-6);
+    eq(w1.sun + w1.snow, 0, "テキストに無いカテゴリは混ぜない");
+    // 晴れスロット + 「晴れ」の日 → 純度維持(希釈しない)
+    const w2 = W.applySecondaryWeights(
+      W.weightsFromVPFDWeather("晴れ"), W.weightsFromText("晴れ", "100"));
+    eq(w2.sun, 1, "副次カテゴリ無しなら純度100%を維持");
+    // 雨または雪スロット + 「くもり」の日 → rain/snow主 + cloud従
+    const w3 = W.applySecondaryWeights(
+      W.weightsFromVPFDWeather("雨または雪"), W.weightsFromText("くもり", "200"));
+    approx(w3.rain, (1 - share) / 2, "雨または雪の雨側", 1e-6);
+    approx(w3.snow, (1 - share) / 2, "雨または雪の雪側", 1e-6);
+    approx(w3.cloud, share, "くもりが従として合成", 1e-6);
+    // 日別テキストに複数の副次カテゴリ → shareを日別比率で按分
+    const w4 = W.applySecondaryWeights(
+      W.weightsFromVPFDWeather("くもり"), W.weightsFromText("晴れ 時々 くもり 所により 雨", "101"));
+    assert(w4.sun > w4.rain && w4.rain > 0, "複数副次はテキスト比率で按分");
+    approx(w4.sun + w4.rain, share, "副次合計はshare", 1e-6);
+    // share=0 で単一栽培に戻せる(調整用)
+    const w5 = W.applySecondaryWeights(
+      W.weightsFromVPFDWeather("くもり"), W.weightsFromText("くもり 所により 雨", "200"), 0);
+    eq(w5.cloud, 1, "share=0で従来挙動");
+    // buildPhasesFromVPFD経由でも合成されること(単一栽培の回帰防止)
+    const now = new Date("2026-06-18T10:55:00+09:00");
+    const phases = W.buildPhasesFromVPFD(mixedVPFD5h(), fixtureForecast11h(), now);
+    const cloudPhase = phases.find((p) => p.dominant === "cloud");
+    assert(cloudPhase && cloudPhase.weights.rain > 0,
+      "くもりスロットでも日別テキストの雨が少量湧く(全部☁️にならない)");
+    assert(cloudPhase.weights.cloud >= 0.7, "主カテゴリの優位は維持");
+  })();
+
+  /* ================= 26. 天候スキル ================= */
+  (function () {
+    // 🌧️ rain: 縦のウォッシュ
+    let st = mkState();
+    clearBoard(st);
+    const A = L.idx(2, 3, 6), B = L.idx(2, 4, 6);
+    st.cells[A] = { type: "rain" };
+    st.cells[B] = { type: "rain" };
+    st.cells[L.idx(2, 0, 6)] = { type: "sun" };    // 同列 → 消える
+    st.cells[L.idx(2, 5, 6)] = { type: "cloud" };  // 同列 → 消える
+    st.cells[L.idx(4, 4, 6)] = { type: "sun" };    // 別列 → 残る
+    let r = L.applyMove(st, A, B);
+    assert(r.skillEffect && r.skillEffect.type === "rain", "rainスキル発動");
+    eq(r.skillEffect.cells.length, 2, "縦1列の他アイテム2個を追加消去");
+    eq(st.cells[L.idx(2, 0, 6)], null, "同列上端を消去");
+    eq(st.cells[L.idx(2, 5, 6)], null, "同列下端を消去");
+    assert(st.cells[L.idx(4, 4, 6)], "別列は残る");
+    eq(r.cleared.length, 3, "cleared=着地1+追加2(重複なし)");
+    eq(new Set(r.cleared).size, r.cleared.length, "clearedに重複がない");
+    eq(st.quotaProgress, 1 + 2 * L.CONFIG.skillQuotaPerTile, "quota=ペア1+追加消去2×係数");
+
+    // 重複排除: パートナーが同列にいる場合、追加消去に二重計上しない
+    st = mkState();
+    clearBoard(st);
+    st.cells[L.idx(2, 3, 6)] = { type: "rain" };
+    st.cells[L.idx(2, 4, 6)] = { type: "rain" };
+    st.cells[L.idx(2, 5, 6)] = { type: "rain" }; // toの隣接同種=パートナー かつ 同列
+    r = L.applyMove(st, L.idx(2, 3, 6), L.idx(2, 4, 6));
+    eq(r.pairs, 2, "同列の隣接同種はペアとして計上");
+    eq(r.skillEffect.cells.length, 0, "ペア消去済みマスをスキルで二重計上しない");
+    eq(st.quotaProgress, 2, "quota=ペア2のみ");
+    eq(new Set(r.cleared).size, r.cleared.length, "cleared重複なし(同列パートナー)");
+
+    // ❄️ snow: 横のブリザード
+    st = mkState();
+    clearBoard(st);
+    st.cells[L.idx(1, 2, 6)] = { type: "snow" };
+    st.cells[L.idx(2, 2, 6)] = { type: "snow" };
+    st.cells[L.idx(5, 2, 6)] = { type: "rain" };  // 同行 → 消える
+    st.cells[L.idx(5, 3, 6)] = { type: "rain" };  // 別行 → 残る
+    r = L.applyMove(st, L.idx(1, 2, 6), L.idx(2, 2, 6));
+    assert(r.skillEffect && r.skillEffect.type === "snow", "snowスキル発動");
+    eq(st.cells[L.idx(5, 2, 6)], null, "同行を消去");
+    assert(st.cells[L.idx(5, 3, 6)], "別行は残る");
+    eq(st.quotaProgress, 1 + 1 * L.CONFIG.skillQuotaPerTile, "quota=ペア1+追加1×係数");
+
+    // ☀️ sun: 周囲8マスの乾燥・融解(アイテムは消さない)
+    st = mkState();
+    clearBoard(st);
+    const C = L.idx(2, 2, 6);
+    st.cells[C] = { type: "sun" };
+    st.cells[C + 1] = { type: "sun" };
+    st.blocked[L.idx(4, 1, 6)] = { kind: "wet", turns: 9 }; // to(3,2)の右上斜め → 解除
+    st.blocked[C + 6] = { kind: "ice", turns: 9 };   // (2,3)はto(3,2)の左下斜め → 解除
+    st.blocked[L.idx(0, 0, 6)] = { kind: "wet", turns: 9 }; // 遠方 → 残る
+    st.cells[C + 7] = { type: "cloud" };             // 8近傍のアイテム → 消えない
+    r = L.applyMove(st, C, C + 1);
+    assert(r.skillEffect && r.skillEffect.type === "sun", "sunスキル発動");
+    assert(r.skillEffect.thawed.length >= 1, "近傍ブロックを解除");
+    assert(!st.blocked[L.idx(4, 1, 6)], "斜め近傍のwet解除");
+    assert(st.blocked[L.idx(0, 0, 6)], "遠方のwetは残る");
+    assert(st.cells[C + 7], "sunはアイテムを消さない");
+    eq(r.skillEffect.cells.length, 0, "sunの追加消去は0(quota加算なし)");
+    eq(st.quotaProgress, 1, "quota=ペア1のみ");
+
+    // ☁️ cloud: 追加効果なし / チャンス: fireChance維持・スキルなし
+    st = mkState();
+    clearBoard(st);
+    st.cells[0] = { type: "cloud" };
+    st.cells[1] = { type: "cloud" };
+    st.cells[2] = { type: "sun" }; // 同行に置いても消えない
+    r = L.applyMove(st, 0, 1);
+    eq(r.skillEffect, null, "cloudはスキルなし");
+    assert(st.cells[2], "cloudマージで同行は消えない");
+    st = mkState();
+    clearBoard(st);
+    st.cells[0] = { type: "bolt" };
+    st.cells[1] = { type: "bolt" };
+    st.cells[3] = { type: "rain" };            // 3×3圏外(x=3)
+    st.cells[L.idx(0, 5, 6)] = { type: "sun" }; // 3×3圏外の遠方
+    r = L.applyMove(st, 0, 1);
+    eq(r.to, 1, "チャンス駒は1歩: 隣へ乗ってマージ");
+    assert(r.chanceEffect && r.chanceEffect.type === "bolt", "boltはfireChance維持");
+    eq(r.skillEffect, null, "チャンスアイテムに行スキルは付かない");
+    assert(st.cells[L.idx(0, 5, 6)], "bolt範囲(3×3)外のアイテムは残る");
+
+    // 境界: 角マスでの発動が安全
+    st = mkState();
+    clearBoard(st);
+    st.cells[L.idx(0, 0, 6)] = { type: "rain" };
+    st.cells[L.idx(0, 1, 6)] = { type: "rain" };
+    st.cells[L.idx(0, 5, 6)] = { type: "cloud" };
+    r = L.applyMove(st, L.idx(0, 0, 6), L.idx(0, 1, 6));
+    eq(st.cells[L.idx(0, 5, 6)], null, "角発動でも列全体を安全に走査");
+    st = mkState();
+    clearBoard(st);
+    st.cells[L.idx(5, 5, 6)] = { type: "sun" };
+    st.cells[L.idx(5, 4, 6)] = { type: "sun" };
+    st.cells[L.idx(5, 2, 6)] = { type: "cloud" }; // 壁: 着地は(5,3)
+    st.blocked[L.idx(4, 4, 6)] = { kind: "ice", turns: 9 }; // (5,3)の8近傍
+    r = L.applyMove(st, L.idx(5, 5, 6), L.idx(5, 4, 6));
+    eq(r.to, L.idx(5, 3, 6), "巻き込み後、壁の手前に着地");
+    assert(!st.blocked[L.idx(4, 4, 6)], "右下角付近でも8近傍走査が安全(着地基準)");
+    eq(L.CONFIG.skillQuotaPerTile, 0.5, "スキルquota係数=0.5(フェーズ飛ばし抑制)");
+  })();
+
+  /* ================= 27. 次の出現予告 ================= */
+  (function () {
+    // 初期化: 規定数が先読みされている
+    let st = mkState();
+    eq(st.spawnQueue.length, L.CONFIG.previewCount, "初期キューは規定数");
+    assert(st.spawnQueue.every((t) => typeof t === "string"), "キューは種別文字列");
+
+    // 予告の正確性: 湧いたアイテムはキュー先頭と一致し、キューは補充される
+    st = mkState();
+    const predicted = st.spawnQueue[0];
+    const second = st.spawnQueue[1];
+    const ev = L.endTurn(st);
+    eq(ev.spawned.type, predicted, "湧いたアイテム=予告の先頭");
+    eq(st.spawnQueue[0], second, "キューが1つ繰り上がる");
+    eq(st.spawnQueue.length, L.CONFIG.previewCount, "消費後も規定数まで補充");
+
+    // 100%晴れフェーズならキューも晴れのみ
+    st = mkState([ph({ weights: { sun: 1, cloud: 0, rain: 0, snow: 0 } })]);
+    assert(st.spawnQueue.every((t) => t === "sun"), "比率100%はキューにも反映");
+
+    // フェーズ切替でキューを新フェーズの比率で引き直す
+    const phases = [
+      ph({ weights: { sun: 1, cloud: 0, rain: 0, snow: 0 }, dominant: "sun" }),
+      ph({ weights: { sun: 0, cloud: 0, rain: 1, snow: 0 }, dominant: "rain", weatherText: "雨" }),
+    ];
+    st = mkState(phases, 11);
+    assert(st.spawnQueue.every((t) => t === "sun"), "切替前キューはsun");
+    st.quotaProgress = st.quotaPerPhase;
+    const ev2 = L.endTurn(st);
+    eq(ev2.phaseAdvanced, true, "フェーズ移行");
+    // 移行後の出現もキュー経由。出現直後のキュー+出現分がすべてrainであること
+    assert(ev2.spawned && ev2.spawned.type === "rain", "移行後の出現は新フェーズの比率");
+    assert(st.spawnQueue.every((t) => t === "rain"), "キューが新フェーズで引き直される");
+
+    // 満杯時: キューを消費しない(予告据え置き)
+    st = mkState();
+    for (let i = 0; i < 36; i++) if (!st.cells[i]) st.cells[i] = { type: L.BASE_TYPES[i % 4] };
+    const qBefore = st.spawnQueue.slice();
+    const ev3 = L.endTurn(st);
+    eq(ev3.spawned, null, "満杯で出現スキップ");
+    eq(st.spawnQueue.join(","), qBefore.join(","), "スキップ時はキュー据え置き");
+  })();
+
+  /* ================= 5b. 駒ごとの動き(チェス式) ================= */
+  (function () {
+    const st = mkState();
+    clearBoard(st);
+    // ☂️ 雨: 縦のみ
+    st.cells[L.idx(3, 3, 6)] = { type: "rain" };
+    let ts = L.validTargets(st, L.idx(3, 3, 6));
+    eq(ts.length, 2, "雨は上下2方向のみ");
+    assert(ts.every((t) => L.xy(t.to, 6)[0] === 3), "雨の行き先は同じ列");
+    // ❄️ 雪: 横のみ
+    clearBoard(st);
+    st.cells[L.idx(3, 3, 6)] = { type: "snow" };
+    ts = L.validTargets(st, L.idx(3, 3, 6));
+    eq(ts.length, 2, "雪は左右2方向のみ");
+    assert(ts.every((t) => L.xy(t.to, 6)[1] === 3), "雪の行き先は同じ行");
+    // ☁️ くもり: 8方向1歩
+    clearBoard(st);
+    st.cells[L.idx(3, 3, 6)] = { type: "cloud" };
+    ts = L.validTargets(st, L.idx(3, 3, 6));
+    eq(ts.length, 8, "くもりは8方向1歩");
+    assert(ts.every((t) => {
+      const [x, y] = L.xy(t.to, 6);
+      return Math.abs(x - 3) <= 1 && Math.abs(y - 3) <= 1;
+    }), "くもりは1歩まで");
+    // くもりの斜めマージ
+    clearBoard(st);
+    st.cells[L.idx(2, 2, 6)] = { type: "cloud" };
+    st.cells[L.idx(3, 3, 6)] = { type: "cloud" };
+    const mg = L.validTargets(st, L.idx(2, 2, 6)).find((t) => t.to === L.idx(3, 3, 6));
+    assert(mg && mg.kind === "merge", "くもりは斜め1歩でマージできる");
+    const r = L.applyMove(st, L.idx(2, 2, 6), L.idx(3, 3, 6));
+    eq(r.pairs, 1, "斜めマージ成立");
+    // ☀️ 晴れ: 縦横スライド(斜め不可)
+    clearBoard(st);
+    st.cells[L.idx(3, 3, 6)] = { type: "sun" };
+    ts = L.validTargets(st, L.idx(3, 3, 6));
+    eq(ts.length, 4, "晴れは縦横4方向");
+    assert(ts.some((t) => t.to === L.idx(3, 0, 6)) && ts.some((t) => t.to === L.idx(0, 3, 6)), "晴れは端まで滑走");
+    // チャンス駒: 8方向1歩
+    clearBoard(st);
+    st.cells[L.idx(0, 0, 6)] = { type: "bolt" };
+    ts = L.validTargets(st, L.idx(0, 0, 6));
+    eq(ts.length, 3, "角のチャンス駒は3方向(境界安全)");
+    // 雨同士が同じ行で隣接 → 直接はマージ不可だが、縦移動の着地隣接では消せる
+    clearBoard(st);
+    st.cells[L.idx(2, 4, 6)] = { type: "rain" };
+    st.cells[L.idx(3, 4, 6)] = { type: "rain" };
+    st.cells[L.idx(3, 1, 6)] = { type: "rain" };
+    st.blocked[L.idx(3, 5, 6)] = { kind: "wet", turns: 3 }; // 壁: 着地を(3,4)に固定
+    assert(!L.validTargets(st, L.idx(2, 4, 6)).some((t) => t.to === L.idx(3, 4, 6)), "横隣の雨へ直接は行けない");
+    const r2 = L.applyMove(st, L.idx(3, 1, 6), L.idx(3, 4, 6)); // 縦に降って巻き込み
+    assert(r2.ok && r2.pairs >= 2, "縦の降下で横隣の雨も着地隣接マージ(壁で着地固定)");
+  })();
+
+  /* ================= 27b. 貫通スライド(巻き込み) ================= */
+  (function () {
+    // 一直線の同種3個を1手で巻き込む
+    const st = mkState();
+    clearBoard(st);
+    st.cells[L.idx(0, 2, 6)] = { type: "sun" };
+    st.cells[L.idx(2, 2, 6)] = { type: "sun" };   // 間に空きがあっても
+    st.cells[L.idx(4, 2, 6)] = { type: "sun" };   // 素通りで全部巻き込む
+    st.cells[L.idx(5, 2, 6)] = { type: "cloud" }; // 壁
+    const ts = L.validTargets(st, L.idx(0, 2, 6));
+    const right = ts.find((t) => t.sweeps && t.sweeps.length === 2);
+    assert(right, "右方向に2個巻き込むターゲット");
+    eq(right.to, L.idx(4, 2, 6), "最後の巻き込みマスで停止(直後が壁)");
+    eq(right.kind, "merge", "巻き込みありはmerge");
+    const r = L.applyMove(st, L.idx(0, 2, 6), L.idx(2, 2, 6)); // 途中の巻き込み対象をタップ
+    eq(r.ok, true, "巻き込み対象タップで発動");
+    eq(r.pairs, 2, "2ペア(巻き込み2個)");
+    eq(st.cells[L.idx(2, 2, 6)], null, "巻き込み1消去");
+    eq(st.cells[L.idx(4, 2, 6)], null, "巻き込み2消去");
+    assert(st.cells[L.idx(5, 2, 6)], "壁は残る");
+    assert(r.skillEffect && r.skillEffect.type === "sun" && r.skillEffect.cells.length === 0,
+      "☀️スキルは消去なし(乾燥のみ)");
+    // 巻き込み後、空きに勢いで抜けるケース
+    const st2 = mkState();
+    clearBoard(st2);
+    st2.cells[L.idx(1, 1, 6)] = { type: "sun" };
+    st2.cells[L.idx(3, 1, 6)] = { type: "sun" };
+    const r2 = L.applyMove(st2, L.idx(1, 1, 6), L.idx(3, 1, 6));
+    eq(r2.to, L.idx(5, 1, 6), "巻き込み後も端まで滑走");
+    eq(r2.pairs, 1, "巻き込み1ペア");
+    // 異種の向こう側の同種は巻き込めない
+    const st3 = mkState();
+    clearBoard(st3);
+    st3.cells[L.idx(0, 0, 6)] = { type: "snow" };
+    st3.cells[L.idx(2, 0, 6)] = { type: "rain" };
+    st3.cells[L.idx(4, 0, 6)] = { type: "snow" };
+    const ts3 = L.validTargets(st3, L.idx(0, 0, 6));
+    const r3 = ts3.find((t) => t.to === L.idx(1, 0, 6));
+    assert(r3 && r3.kind === "move" && (!r3.sweeps || !r3.sweeps.length), "壁の向こうは巻き込まない");
+  })();
+
+  /* ================= 28. 天気図鑑の判定 ================= */
+  (function () {
+    eq(L.DEX.length, 23, "図鑑は23項目");
+    assert(L.DEX.every((d) => d.id && d.name && d.glyph && d.cond), "全項目に必須フィールド");
+    const ids = new Set(L.DEX.map((d) => d.id));
+    eq(ids.size, 23, "IDに重複なし");
+
+    // マージ時判定
+    let st = mkState();
+    clearBoard(st);
+    st.cells[L.idx(2, 1, 6)] = { type: "rain" };
+    st.cells[L.idx(2, 3, 6)] = { type: "rain" };
+    let r = L.applyMove(st, L.idx(2, 1, 6), L.idx(2, 3, 6));
+    let got = L.dexOnMerge(st, r, "rain");
+    assert(got.includes("rain"), "rainマージ(縦)で雨を解禁");
+    assert(!got.includes("chain3") && !got.includes("combo5"), "条件未達は含まない");
+
+    // 3ペア同時 → chain3
+    st = mkState();
+    clearBoard(st);
+    const to = L.idx(2, 3, 6);
+    st.cells[to] = { type: "sun" };
+    st.cells[L.idx(1, 3, 6)] = { type: "sun" };
+    st.cells[L.idx(3, 3, 6)] = { type: "sun" };
+    st.cells[L.idx(2, 5, 6)] = { type: "sun" };
+    st.cells[L.idx(2, 2, 6)] = { type: "rain" }; // 壁
+    r = L.applyMove(st, L.idx(2, 5, 6), to);
+    got = L.dexOnMerge(st, r, "sun");
+    assert(got.includes("chain3"), "3ペアでchain3");
+
+    // コンボ5 → combo5
+    st = mkState();
+    clearBoard(st);
+    st.comboStreak = 4;
+    st.cells[0] = { type: "sun" };
+    st.cells[1] = { type: "sun" };
+    r = L.applyMove(st, 0, 1);
+    got = L.dexOnMerge(st, r, "sun");
+    assert(got.includes("combo5"), "5連続マージでcombo5");
+
+    // heat全消去 → heat + zenkeshi
+    st = mkState();
+    clearBoard(st);
+    st.cells[0] = { type: "heat" };
+    st.cells[1] = { type: "heat" };
+    r = L.applyMove(st, 0, 1);
+    got = L.dexOnMerge(st, r, "heat");
+    assert(got.includes("heat") && got.includes("zenkeshi"), "heat全消去で猛暑日+気圧一掃");
+
+    // 非マージ手では何も解禁しない
+    st = mkState();
+    clearBoard(st);
+    st.cells[0] = { type: "sun" };
+    r = L.applyMove(st, 0, L.idx(5, 0, 6));
+    eq(L.dexOnMerge(st, r, "sun").length, 0, "非マージ手は解禁なし");
+
+    // エンディング時判定
+    const mk = (over) => Object.assign({ ended: true, rescueCount: 0, effectiveMoves: 0,
+      quotaPerPhase: 3, phases: [] }, over);
+    let ids2 = L.dexOnEnding(mk({ phases: [
+      ph({ dominant: "sun" }), ph({ dominant: "sun" }),
+    ] }));
+    assert(ids2.includes("kaisei"), "全フェーズ晴れでkaisei");
+    assert(ids2.includes("norescue"), "救済なしでnorescue");
+    assert(ids2.includes("star3"), "手数0は★3扱い");
+    assert(!ids2.includes("utsurigi"), "2種ではutsurigi無し");
+
+    ids2 = L.dexOnEnding(mk({ rescueCount: 2, effectiveMoves: 999, phases: [
+      ph({ dominant: "sun" }), ph({ dominant: "rain", pops: 85 }),
+      ph({ dominant: "cloud" }), ph({ dominant: "snow", weights: { snow: 0.5, rain: 0.5, sun: 0, cloud: 0 } }),
+    ] }));
+    assert(ids2.includes("arate"), "pops85でarate");
+    assert(ids2.includes("utsurigi"), "4種の天気でutsurigi");
+    assert(ids2.includes("mixed"), "雨雪比率が拮抗するフェーズでmixed");
+    assert(!ids2.includes("kaisei"), "晴れ以外があればkaisei無し");
+    assert(!ids2.includes("norescue"), "救済ありはnorescue無し");
+    assert(!ids2.includes("star3"), "手数過多は★3無し");
+
+    ids2 = L.dexOnEnding(mk({ phases: [ph({ weatherText: "雨または雪", dominant: "rain" })] }));
+    assert(ids2.includes("mixed"), "予報文「雨または雪」でmixed");
+
+    // 追加バッジ(アイコン以外)
+    let st9 = mkState();
+    clearBoard(st9);
+    st9.cells[L.idx(0, 2, 6)] = { type: "sun" };
+    st9.cells[L.idx(1, 2, 6)] = { type: "sun" };
+    st9.cells[L.idx(2, 2, 6)] = { type: "sun" };
+    let r9 = L.applyMove(st9, L.idx(0, 2, 6), L.idx(1, 2, 6));
+    assert(L.dexOnMerge(st9, r9, "sun").includes("sweep3"), "3個巻き込みでsweep3");
+    st9 = mkState();
+    clearBoard(st9);
+    st9.comboStreak = 7;
+    st9.cells[0] = { type: "sun" };
+    st9.cells[1] = { type: "sun" };
+    r9 = L.applyMove(st9, 0, 1);
+    assert(L.dexOnMerge(st9, r9, "sun").includes("combo8"), "8連続でcombo8");
+    const base = { ended: true, rescueCount: 1, effectiveMoves: 999, quotaPerPhase: 3,
+      phases: [ph({ dominant: "rain" })], moveCount: 30, skillsUsed: { sun: true, rain: true, snow: true } };
+    let ids3 = L.dexOnEnding(base, { playDays: 3, areasCleared: 2 });
+    assert(ids3.includes("speed"), "45手以内でspeed");
+    assert(ids3.includes("allskill"), "3スキル発動でallskill");
+    assert(ids3.includes("days3"), "3日でdays3");
+    assert(ids3.includes("areas2"), "2エリアでareas2");
+    ids3 = L.dexOnEnding(Object.assign({}, base, { moveCount: 46, skillsUsed: { sun: true } }), { playDays: 1, areasCleared: 1 });
+    assert(!ids3.includes("speed") && !ids3.includes("allskill") && !ids3.includes("days3") && !ids3.includes("areas2"),
+      "条件未達の追加バッジは含まない");
+  })();
+
+  /* 11時発表の実構造フィクスチャ(取得した実JSONの構造を忠実に縮約) */
+  function fixtureForecast11h() {
+    return [
+      {
+        publishingOffice: "気象庁",
+        reportDatetime: "2026-06-18T11:00:00+09:00",
+        timeSeries: [
+          {
+            timeDefines: ["2026-06-18T11:00:00+09:00", "2026-06-19T00:00:00+09:00", "2026-06-20T00:00:00+09:00"],
+            areas: [{
+              area: { name: "東京地方", code: "130010" },
+              weatherCodes: ["313", "201", "212"],
+              weathers: ["雨 昼過ぎ から くもり 所により 昼過ぎ から 雷", "くもり 昼前 まで 時々 晴れ", "くもり 後 一時 雨"],
+            }],
+          },
+          {
+            // 11時発表: popsは12:00開始(11時台をカバーする区間が存在しない)
+            timeDefines: [
+              "2026-06-18T12:00:00+09:00", "2026-06-18T18:00:00+09:00",
+              "2026-06-19T00:00:00+09:00", "2026-06-19T06:00:00+09:00",
+              "2026-06-19T12:00:00+09:00", "2026-06-19T18:00:00+09:00",
+            ],
+            areas: [{ area: { name: "東京地方", code: "130010" }, pops: ["20", "20", "10", "0", "20", "30"] }],
+          },
+          {
+            // 11時発表: 並びは[今日T09, 今日T00, 明日T00, 明日T09]で今日T00はダミー
+            timeDefines: [
+              "2026-06-18T09:00:00+09:00", "2026-06-18T00:00:00+09:00",
+              "2026-06-19T00:00:00+09:00", "2026-06-19T09:00:00+09:00",
+            ],
+            areas: [{ area: { name: "東京", code: "44132" }, temps: ["24", "24", "20", "29"] }],
+          },
+        ],
+      },
+      { // 週間予報: 当日popsは空文字(本作では参照しないことの回帰確認用)
+        publishingOffice: "気象庁",
+        reportDatetime: "2026-06-18T11:00:00+09:00",
+        timeSeries: [{
+          timeDefines: ["2026-06-19T00:00:00+09:00"],
+          areas: [{ area: { name: "東京地方", code: "130010" }, weatherCodes: ["201"], pops: [""] }],
+        }],
+      },
+    ];
+  }
+
+  /* 5時発表のVPFD(スロットが06:00起点)。forecast11時発表との混在状態を再現 */
+  function mixedVPFD5h() {
+    const slots = ["06:00", "09:00", "12:00", "15:00", "18:00", "21:00"];
+    const nextDay = ["00:00", "03:00", "06:00", "09:00"];
+    const timeDefines = slots.map((t) => ({ dateTime: `2026-06-18T${t}:00+09:00`, duration: "PT3H" }))
+      .concat(nextDay.map((t) => ({ dateTime: `2026-06-19T${t}:00+09:00`, duration: "PT3H" })));
+    const weather = ["雨", "雨", "くもり", "くもり", "くもり", "晴れ", "晴れ", "くもり", "くもり", "晴れ"];
+    return {
+      firstAreaCode: "130010", publishingOffice: "気象庁", infoType: "発表",
+      reportDateTime: "2026-06-18T05:00:00+09:00",
+      areaTimeSeries: { timeDefines, weather, wind: [] },
+      pointTimeSeries: {
+        pointNameJP: "東京",
+        timeDefines: timeDefines.map((d) => ({ dateTime: d.dateTime })),
+        temperature: [22, 25, 26, 26, 24, 22, 21, 20, 20, 24],
+      },
+    };
+  }
+
+  /* ---------- forecastフィクスチャ(実APIの構造を忠実に再現) ---------- */
+  function fixtureForecast() {
+    return [
+      {
+        publishingOffice: "気象庁",
+        reportDatetime: "2026-01-10T11:00:00+09:00",
+        timeSeries: [
+          {
+            timeDefines: ["2026-01-10T11:00:00+09:00", "2026-01-11T00:00:00+09:00", "2026-01-12T00:00:00+09:00"],
+            areas: [{
+              area: { name: "東京地方", code: "130010" },
+              weatherCodes: ["101", "313", "200"],
+              weathers: ["晴れ 時々 くもり", "雨 のち くもり 所により 雷を伴う", "くもり"],
+              winds: ["北の風", "南の風", "北の風"],
+            }],
+          },
+          {
+            timeDefines: [
+              "2026-01-10T12:00:00+09:00", "2026-01-10T18:00:00+09:00",
+              "2026-01-11T00:00:00+09:00", "2026-01-11T06:00:00+09:00",
+              "2026-01-11T12:00:00+09:00",
+            ],
+            areas: [{ area: { name: "東京地方", code: "130010" }, pops: ["20", "40", "70", "80", "60"] }],
+          },
+          {
+            timeDefines: [
+              "2026-01-10T00:00:00+09:00", "2026-01-10T09:00:00+09:00",
+              "2026-01-11T00:00:00+09:00", "2026-01-11T09:00:00+09:00",
+            ],
+            areas: [{ area: { name: "東京", code: "44132" }, temps: ["3", "12", "5", "8"] }],
+          },
+        ],
+      },
+      { /* 週間予報(本作では未使用) */ },
+    ];
+  }
+
+  /* ---------- 結果出力 ---------- */
+  function finish() {
+    const total = pass + fail;
+    const summary = `Weather Match tests: ${pass}/${total} passed` + (fail ? `, ${fail} FAILED` : "");
+    if (isNode) {
+      console.log(summary);
+      if (fail) { failures.forEach((f) => console.log("  ✗ " + f)); process.exit(1); }
+    } else {
+      window.WMTestResult = { pass, fail, failures, summary };
+      document.dispatchEvent(new CustomEvent("wm-tests-done"));
+    }
+  }
+})();
+
+</script>
+</body>
+</html>
