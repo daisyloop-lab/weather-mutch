@@ -63,6 +63,8 @@ p.note { font-size: 12px; color: #5A6774; }
     previewCount: 2,
     // スライド移動: falseなら障害物/端まで滑る(強制スライド)。trueで経路途中も選択可
     slideStopAnywhere: false,
+    // 風ドリフト: 強度→発生周期(ターン)。強いほど頻繁に吹く
+    windInterval: { 1: 4, 2: 3 },
     // 貫通の巻き込み上限(1スライドで消せる同種の数)。0=無制限。
     // 上限に達した場合、そのマスで停止する(それ以上は進まない)
     sweepLimit: 0,
@@ -126,6 +128,8 @@ p.note { font-size: 12px; color: #5A6774; }
       skillsUsed: {},              // このプレイで発動したスキル種(図鑑用)
       lastMovePairs: 0,            // 直前手のマージペア数(加圧スポーン判定用)
       sweepTotal: 0,               // 巻き込み消去の累計(評価コメント用)
+      windCounter: 0,              // 風ドリフトまでのターン計数(フェーズごとにリセット)
+      windDrifts: 0,               // 風ドリフト発生回数(図鑑・コメント用)
       ended: false,
     };
     seedInitialItems(st, CONFIG.initialItems);
@@ -455,10 +459,52 @@ p.note { font-size: 12px; color: #5A6774; }
     // 4) ブロック追加発生
     ev.blockedNew = maybeSpawnBlocks(st);
 
-    // 5) 手詰まり検知
+    // 5) 風ドリフト: フェーズの風が「やや強く」以上なら周期到来で全駒が風下へ1マス
+    ev.wind = maybeWindDrift(st);
+
+    // 6) 手詰まり検知
     if (!anyValidMove(st)) ev.rescue = rescue(st);
 
     return ev;
+  }
+
+  /* 風の状態(UI表示用): {dirName, dx, dy, strength, turnsToWind} | null */
+  function windStatus(st) {
+    const w = currentPhase(st) && currentPhase(st).wind;
+    if (!w || !w.strength) return null;
+    const interval = CONFIG.windInterval[w.strength] || 4;
+    return Object.assign({}, w, { turnsToWind: Math.max(0, interval - st.windCounter) });
+  }
+
+  /* 周期到来なら全駒を風下へ1マス流す(風下側の駒から処理=列ごと押し流される)。
+   * 移動先が盤内かつ空きかつ非ブロックの駒だけ動く。自動マージはしない。 */
+  function maybeWindDrift(st) {
+    const w = currentPhase(st) && currentPhase(st).wind;
+    if (!w || !w.strength) { st.windCounter = 0; return null; }
+    const interval = CONFIG.windInterval[w.strength] || 4;
+    st.windCounter++;
+    if (st.windCounter < interval) return null;
+    st.windCounter = 0;
+    const order = [];
+    for (let i = 0; i < st.cells.length; i++) if (st.cells[i]) order.push(i);
+    // 風下側(移動先方向に遠い駒)から処理する
+    order.sort((a, b) => {
+      const [ax, ay] = xy(a, st.w), [bx, by] = xy(b, st.w);
+      return (bx * w.dx + by * w.dy) - (ax * w.dx + ay * w.dy);
+    });
+    const moved = [];
+    for (const i of order) {
+      const [x, y] = xy(i, st.w);
+      const nx = x + w.dx, ny = y + w.dy;
+      if (nx < 0 || ny < 0 || nx >= st.w || ny >= st.h) continue;
+      const ni = idx(nx, ny, st.w);
+      if (st.cells[ni] || st.blocked[ni]) continue;
+      st.cells[ni] = st.cells[i];
+      st.cells[i] = null;
+      moved.push({ from: i, to: ni });
+    }
+    st.windDrifts++;
+    return { dirName: w.dirName, dx: w.dx, dy: w.dy, strength: w.strength, moved };
   }
 
   function advancePhase(st, ev) {
@@ -490,6 +536,7 @@ p.note { font-size: 12px; color: #5A6774; }
       if (i >= st.w) nb[i - st.w] = st.blocked[k];
     }
     st.blocked = nb;
+    st.windCounter = 0; // 風の周期はフェーズごとに仕切り直し
     // 予告キューは新フェーズの比率で引き直す(切替の瞬間に予告も天気が変わる)
     st.spawnQueue = [];
     fillSpawnQueue(st);
@@ -609,6 +656,7 @@ p.note { font-size: 12px; color: #5A6774; }
     { id: "speed", name: "疾風", glyph: "🌪️", cond: "45手以内でクリアする", desc: "" },
     { id: "days3", name: "観測三日目", glyph: "📔", cond: "3日(暦日)以上プレイする", desc: "毎日の空を記録するのは観測の基本。気象人日記への第一歩。" },
     { id: "areas2", name: "広域観測", glyph: "🗾", cond: "2つ以上のエリアでクリアする", desc: "同じ日でも空はエリアごとに違う。" },
+    { id: "windy", name: "風の通り道", glyph: "💨", cond: "風の強い日(やや強く以上)を最後まで遊ぶ", desc: "「やや強い風」は平均10m/s以上。傘がまっすぐさせない強さ。" },
   ];
 
   const DEX_MERGE_TYPES = BASE_TYPES.concat(CHANCE_TYPES);
@@ -630,6 +678,7 @@ p.note { font-size: 12px; color: #5A6774; }
     const m = meta || {};
     if (st.moveCount <= 45) ids.push("speed");
     if (st.skillsUsed && st.skillsUsed.sun && st.skillsUsed.rain && st.skillsUsed.snow) ids.push("allskill");
+    if (st.phases.some((p) => p.wind && p.wind.strength >= 1)) ids.push("windy");
     if ((m.playDays || 0) >= 3) ids.push("days3");
     if ((m.areasCleared || 0) >= 2) ids.push("areas2");
     const ph = st.phases;
@@ -717,6 +766,7 @@ p.note { font-size: 12px; color: #5A6774; }
     emptyCells, validTargets, applyMove, endTurn, fireSkill, fillSpawnQueue,
     DEX, dexOnMerge, dexOnEnding, DIRS, MOVEMENT, movementFor,
     anyValidMove, rescue, starRating, weatherDigest, remainingQuota, endingComments,
+    windStatus, maybeWindDrift,
     blockRuleFor, spawnBlocks,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
@@ -800,6 +850,61 @@ p.note { font-size: 12px; color: #5A6774; }
     let best = "cloud", bv = -1;
     for (const k of Object.keys(weights)) if (weights[k] > bv) { bv = weights[k]; best = k; }
     return best;
+  }
+
+  /* ---------------- 風 ----------------
+   * 風向は「吹いてくる方角」。北の風=北から南へ吹く → 駒は南(下)へ流れる。
+   * 強度: 0=穏やか(ドリフトなし) / 1=やや強い / 2=強い
+   * VPFDのwind構造は非公式・未確定のため防御的にパースし、
+   * 取れなければ府県予報テキスト(「北の風 やや強く」)へフォールバック */
+  const WIND_DIRS = [
+    ["北西", 1, 1], ["北東", -1, 1], ["南西", 1, -1], ["南東", -1, -1],
+    ["北", 0, 1], ["南", 0, -1], ["東", -1, 0], ["西", 1, 0],
+  ]; // 複合方位を先に走査(「北北西」→北西に丸める)
+  function windVector(dirText) {
+    if (!dirText) return null;
+    for (const [name, dx, dy] of WIND_DIRS) {
+      if (dirText.includes(name)) return { dirName: name, dx, dy };
+    }
+    return null;
+  }
+  function strengthFromText(text) {
+    if (!text) return 0;
+    if (/非常に強|強く/.test(text) && !/やや強く/.test(text)) return 2;
+    if (/やや強く/.test(text)) return 1;
+    if (/非常に強|強い/.test(text)) return 2;
+    return 0;
+  }
+  /* VPFDのwind[i]から{dirText, speed}を防御的に抽出 */
+  function vpfdWindAt(windArr, i) {
+    try {
+      const w = windArr && windArr[i];
+      if (w == null) return null;
+      if (typeof w === "string") return { dirText: w, speed: null };
+      const dirText = typeof w.direction === "string" ? w.direction
+        : (w.direction && (w.direction.jp || w.direction.value)) || (typeof w.name === "string" ? w.name : null);
+      let speed = null;
+      const rawSpeed = w.speed != null ? w.speed : w.value;
+      if (rawSpeed != null && Number.isFinite(parseInt(rawSpeed, 10))) speed = parseInt(rawSpeed, 10);
+      else if (typeof w.range === "string") {
+        const m = w.range.match(/(\d+)/g);
+        if (m) speed = Math.max(...m.map(Number));
+      }
+      return dirText ? { dirText, speed } : null;
+    } catch (e) { return null; }
+  }
+  /* フェーズの風を決定: VPFD(3時間)優先、強度は風速と日別テキストの強い方 */
+  function windForPhase(vpfdWind, dailyWindText) {
+    const textStrength = strengthFromText(dailyWindText);
+    let vec = null, speedStrength = 0;
+    if (vpfdWind) {
+      vec = windVector(vpfdWind.dirText);
+      if (vpfdWind.speed != null) speedStrength = vpfdWind.speed >= 10 ? 2 : vpfdWind.speed >= 6 ? 1 : 0;
+    }
+    if (!vec) vec = windVector(dailyWindText);
+    if (!vec) return null;
+    const strength = Math.max(speedStrength, textStrength);
+    return { dirName: vec.dirName, dx: vec.dx, dy: vec.dy, strength };
   }
 
   /* VPFDの3時間天気文字列 → 比率 */
@@ -893,6 +998,7 @@ p.note { font-size: 12px; color: #5A6774; }
       return {
         code: ts.areas[areaIndex].weatherCodes[pick],
         text: (ts.areas[areaIndex].weathers || [])[pick] || "",
+        windText: (ts.areas[areaIndex].winds || [])[pick] || "",
       };
     } catch (e) { return null; }
   }
@@ -953,6 +1059,7 @@ p.note { font-size: 12px; color: #5A6774; }
         weights,
         dominant: dominantOf(weights),
         weatherText: dw.text,
+        wind: windForPhase(null, dw.windText),
         tempMin: min, tempMax: max,
         source: "pops6h",
       });
@@ -1007,6 +1114,7 @@ p.note { font-size: 12px; color: #5A6774; }
         weights,
         dominant: dominantOf(weights),
         weatherText: (dw && dw.text) || a.weather[i],
+        wind: windForPhase(vpfdWindAt(a.wind, i), dw ? dw.windText : ""),
         temp,
         tempMin: dayTemps.min, tempMax: dayTemps.max,
         source: "vpfd3h",
@@ -1050,7 +1158,8 @@ p.note { font-size: 12px; color: #5A6774; }
           timeDefines: [day0.toISOString(), day1.toISOString()],
           areas: [{ area: { name: "デモ地方", code: "999999" },
                     weatherCodes: ["212", "300"],
-                    weathers: ["くもり 夜 雨 所により 雷を伴う", "雨 時々 くもり"] }],
+                    weathers: ["くもり 夜 雨 所により 雷を伴う", "雨 時々 くもり"],
+                    winds: ["北の風 やや強く", "北西の風 強く"] }],
         },
         { timeDefines: defs, areas: [{ area: { name: "デモ地方", code: "999999" }, pops }] },
         {
@@ -1080,7 +1189,8 @@ p.note { font-size: 12px; color: #5A6774; }
     return {
       firstAreaCode: "999999", publishingOffice: "デモ", infoType: "デモ",
       reportDateTime: base.toISOString(),
-      areaTimeSeries: { timeDefines, weather: weathers, wind: [] },
+      areaTimeSeries: { timeDefines, weather: weathers,
+        wind: weathers.map((_, i) => ({ direction: i < 4 ? "北" : "南西", speed: i < 4 ? 7 : 4 })) },
       pointTimeSeries: { pointNameJP: "デモ", timeDefines: timeDefines.map((d) => ({ dateTime: d.dateTime })), temperature },
     };
   }
@@ -1145,6 +1255,7 @@ p.note { font-size: 12px; color: #5A6774; }
     popsAt, popsForRange, dailyWeatherAt, tempsAt, sameJstDate,
     buildPhasesFromForecast, buildPhasesFromVPFD, validateVPFD, rangeLabel,
     mockForecast, mockVPFD, loadPhases, loadAreaList,
+    windVector, strengthFromText, vpfdWindAt, windForPhase,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else global.WMWeather = api;
@@ -2046,12 +2157,71 @@ document.addEventListener("wm-tests-done", () => {
     eq(c.length <= 2, true, "コメントは最大2件");
   })();
 
+  /* ================= 27d. 風 ================= */
+  (function () {
+    // 方位パース
+    let v = W.windVector("北の風");
+    eq(v.dirName, "北", "北の風");
+    eq(v.dx + "," + v.dy, "0,1", "北の風は南(下)へ流す");
+    v = W.windVector("北北西の風");
+    eq(v.dirName, "北西", "複合方位は8方位へ丸める");
+    eq(W.windVector("風弱く"), null, "方位なしはnull");
+    // 強度
+    eq(W.strengthFromText("北の風 やや強く"), 1, "やや強く=1");
+    eq(W.strengthFromText("南の風 強く"), 2, "強く=2");
+    eq(W.strengthFromText("北の風"), 0, "無印=0(穏やか)");
+    // VPFD防御パース
+    eq(W.vpfdWindAt([{ direction: "北", speed: "7" }], 0).speed, 7, "オブジェクト形式");
+    eq(W.vpfdWindAt(["南西の風"], 0).dirText, "南西の風", "文字列形式");
+    eq(W.vpfdWindAt(null, 0), null, "wind無しはnull");
+    eq(W.vpfdWindAt([{}], 0), null, "空オブジェクトはnull");
+    // 合成
+    let wp = W.windForPhase({ dirText: "北", speed: 7 }, "北の風");
+    eq(wp.strength, 1, "風速6以上で強度1");
+    wp = W.windForPhase({ dirText: "北", speed: 3 }, "北の風 強く");
+    eq(wp.strength, 2, "日別テキストの強い方を採用");
+    eq(W.windForPhase(null, "静穏"), null, "方位が取れなければ風なし");
+
+    // ドリフト: 北の風(下へ)で列ごと押し流される
+    const windyPh = ph({ wind: { dirName: "北", dx: 0, dy: 1, strength: 1 } });
+    const st = mkState([windyPh, windyPh]);
+    clearBoard(st);
+    st.cells[L.idx(2, 0, 6)] = { type: "rain" };
+    st.cells[L.idx(2, 1, 6)] = { type: "cloud" };  // 縦に連なる2駒
+    st.cells[L.idx(4, 5, 6)] = { type: "sun" };    // 下端 → 動けない
+    st.blocked[L.idx(0, 1, 6)] = { kind: "wet", turns: 9 };
+    st.cells[L.idx(0, 0, 6)] = { type: "snow" };   // 直下がブロック → 動けない
+    const interval = L.CONFIG.windInterval[1];
+    let windEv = null;
+    for (let t = 0; t < interval; t++) {
+      st.quotaProgress = 0; // フェーズ移行を防ぐ
+      const ev = L.endTurn(st);
+      if (ev.wind) windEv = ev.wind;
+    }
+    assert(windEv, "周期到来で風が吹く");
+    eq(windEv.moved.length >= 2, true, "連なった駒が押し流される");
+    eq((st.cells[L.idx(2, 1, 6)] || {}).type, "rain", "先頭が1マス下へ");
+    eq((st.cells[L.idx(2, 2, 6)] || {}).type, "cloud", "後続も詰めて流れる");
+    assert(st.cells[L.idx(4, 5, 6)], "下端の駒は動かない");
+    eq((st.cells[L.idx(0, 0, 6)] || {}).type, "snow", "ブロック直上の駒は動かない");
+    // 風ステータス(UI用)
+    st.windCounter = 1;
+    const ws = L.windStatus(st);
+    eq(ws.turnsToWind, interval - 1, "風までの残りターン");
+    // 穏やかなフェーズは吹かない
+    const st2 = mkState([ph()]);
+    clearBoard(st2);
+    st2.cells[0] = { type: "sun" };
+    for (let t = 0; t < 8; t++) { st2.quotaProgress = 0; const ev = L.endTurn(st2); assert(!ev.wind, "穏やかな日はドリフトなし t" + t); }
+    eq(L.windStatus(st2), null, "穏やかな日は風ステータスなし");
+  })();
+
   /* ================= 28. 天気図鑑の判定 ================= */
   (function () {
-    eq(L.DEX.length, 23, "図鑑は23項目");
+    eq(L.DEX.length, 24, "図鑑は24項目");
     assert(L.DEX.every((d) => d.id && d.name && d.glyph && d.cond), "全項目に必須フィールド");
     const ids = new Set(L.DEX.map((d) => d.id));
-    eq(ids.size, 23, "IDに重複なし");
+    eq(ids.size, 24, "IDに重複なし");
 
     // マージ時判定
     let st = mkState();
@@ -2149,6 +2319,10 @@ document.addEventListener("wm-tests-done", () => {
     assert(ids3.includes("allskill"), "3スキル発動でallskill");
     assert(ids3.includes("days3"), "3日でdays3");
     assert(ids3.includes("areas2"), "2エリアでareas2");
+    const idsW = L.dexOnEnding(Object.assign({}, base, {
+      phases: [ph({ wind: { dirName: "北", dx: 0, dy: 1, strength: 1 } })] }), {});
+    assert(idsW.includes("windy"), "風の強い日でwindy");
+    assert(!L.dexOnEnding(base, {}).includes("windy"), "穏やかな日はwindy無し");
     ids3 = L.dexOnEnding(Object.assign({}, base, { moveCount: 46, skillsUsed: { sun: true } }), { playDays: 1, areasCleared: 1 });
     assert(!ids3.includes("speed") && !ids3.includes("allskill") && !ids3.includes("days3") && !ids3.includes("areas2"),
       "条件未達の追加バッジは含まない");
