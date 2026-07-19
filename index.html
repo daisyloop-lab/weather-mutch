@@ -1085,7 +1085,8 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       if (i >= st.w) nb[i - st.w] = st.blocked[k];
     }
     st.blocked = nb;
-    st.windCounter = 0; // 風の周期はフェーズごとに仕切り直し
+    // 風カウンターはフェーズをまたいで持ち越す(風の日は吹き続ける)。
+    // 穏やかなフェーズに入った時点で maybeWindDrift 側がリセットする
     // 予告キューは新フェーズの比率で引き直す(切替の瞬間に予告も天気が変わる)
     st.spawnQueue = [];
     fillSpawnQueue(st);

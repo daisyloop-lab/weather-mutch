@@ -536,7 +536,8 @@ p.note { font-size: 12px; color: #5A6774; }
       if (i >= st.w) nb[i - st.w] = st.blocked[k];
     }
     st.blocked = nb;
-    st.windCounter = 0; // 風の周期はフェーズごとに仕切り直し
+    // 風カウンターはフェーズをまたいで持ち越す(風の日は吹き続ける)。
+    // 穏やかなフェーズに入った時点で maybeWindDrift 側がリセットする
     // 予告キューは新フェーズの比率で引き直す(切替の瞬間に予告も天気が変わる)
     st.spawnQueue = [];
     fillSpawnQueue(st);
@@ -2214,6 +2215,36 @@ document.addEventListener("wm-tests-done", () => {
     st2.cells[0] = { type: "sun" };
     for (let t = 0; t < 8; t++) { st2.quotaProgress = 0; const ev = L.endTurn(st2); assert(!ev.wind, "穏やかな日はドリフトなし t" + t); }
     eq(L.windStatus(st2), null, "穏やかな日は風ステータスなし");
+  })();
+
+  /* ================= 27e. 風の持ち越し(フェーズ移行リセットバグの回帰) ================= */
+  (function () {
+    const windyPh = () => ph({ wind: { dirName: "北", dx: 0, dy: 1, strength: 1 } });
+    // 実プレイ相当: 毎ターンマージしてフェーズがどんどん進んでも、風は周期どおり吹く
+    const st = mkState([windyPh(), windyPh(), windyPh(), windyPh()], 5);
+    let windFired = 0, guard = 40;
+    while (!st.ended && guard-- > 0) {
+      // 毎ターン強制的にペアを用意してマージ(=最速でノルマが進む状況)
+      clearBoard(st);
+      st.cells[L.idx(2, 1, 6)] = { type: "sun" };
+      st.cells[L.idx(2, 3, 6)] = { type: "sun" };
+      st.cells[L.idx(0, 5, 6)] = { type: "cloud" }; // 風で流される観測用の駒
+      L.applyMove(st, L.idx(2, 1, 6), L.idx(2, 3, 6));
+      const ev = L.endTurn(st);
+      if (ev.wind) windFired++;
+    }
+    assert(windFired >= 1, "フェーズが最速で進んでも風は発火する(持ち越し)");
+    const interval = L.CONFIG.windInterval[1];
+    // 4フェーズ×ノルマぶんのターン数に対して、おおよそ interval ごとに吹いている
+    assert(windFired >= Math.floor((st.moveCount - 1) / interval) - 1, "発火頻度が周期に整合");
+
+    // 穏やかなフェーズに入るとリセットされる
+    const st2 = mkState([windyPh(), ph()], 6); // 2フェーズ目は風なし
+    st2.windCounter = 2;
+    st2.phaseIndex = 1;
+    const ev2 = L.endTurn(st2);
+    assert(!ev2.wind, "穏やかなフェーズでは吹かない");
+    eq(st2.windCounter, 0, "穏やかなフェーズでカウンターはリセット");
   })();
 
   /* ================= 28. 天気図鑑の判定 ================= */
