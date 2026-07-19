@@ -65,7 +65,8 @@ body.sky-wash::after {
 .app { width: min(94vw, 430px); display: flex; flex-direction: column; gap: 10px; }
 
 /* ---- ヘッダー ---- */
-header { display: flex; align-items: center; gap: 8px; padding: 2px 2px 0; }
+header { display: flex; align-items: center; gap: 8px; padding: 2px 2px 0; flex-wrap: wrap; row-gap: 7px; }
+.hctrl { display: flex; align-items: center; gap: 7px; margin-left: auto; min-width: 0; }
 /* ロゴタイプ: 細いWEATHER × 太いMATCH、傾き+空色グラデーションで気流を表現 */
 h1.logo {
   display: flex; align-items: baseline; gap: 7px;
@@ -92,10 +93,17 @@ button { font-family: inherit; color: inherit; }
   border: 1px solid var(--card-line); background: var(--card);
   border-radius: 999px; padding: 7px 12px; font-size: 12px; cursor: pointer;
   backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  white-space: nowrap; /* 日本の地名(3文字以上)でも縦書きにならない */
 }
+#areaBtn { max-width: 46vw; overflow: hidden; text-overflow: ellipsis; }
 #muteBtn, #helpBtn { width: 38px; text-align: center; padding: 7px 0; }
 #helpBtn { font-weight: 700; }
-#volume { width: 64px; accent-color: var(--accent); }
+#volume { width: 56px; min-width: 44px; accent-color: var(--accent); }
+/* 狭い画面ではロゴの字間を詰め、コントロール群は必要なら2行目へ折り返す */
+@media (max-width: 420px) {
+  .logo-weather { letter-spacing: 0.18em; font-size: 16px; }
+  .logo-match { font-size: 20px; }
+}
 
 /* ---- フェーズカード(観測カード) ---- */
 .phase-card {
@@ -195,6 +203,20 @@ body.dark-sky #srcBadge.demo { color: #FFB98A; }
 .cell.wet::before { content: "💧"; position: absolute; right: 3px; bottom: 2px; font-size: 10px; opacity: 0.8; }
 .cell.ice { background: var(--ice); }
 .cell.ice::before { content: "❄"; position: absolute; right: 3px; bottom: 1px; font-size: 11px; opacity: 0.75; color: #4E86A8; }
+
+/* 暗い空(雨・荒天)での視認性: ハイライトは白系、ブロックマスは縁取りで分離 */
+body.dark-sky .cell.target { background: rgba(255, 255, 255, 0.15); }
+body.dark-sky .cell.target::after { border-color: rgba(214, 234, 255, 0.9); }
+body.dark-sky .cell.target-merge { background: rgba(255, 255, 255, 0.22); }
+body.dark-sky .cell.target-merge::after { color: #D6EAFF; }
+body.dark-sky .cell.trail { background: rgba(255, 255, 255, 0.07); }
+body.dark-sky .cell.trail::after { background: rgba(255, 255, 255, 0.55); }
+body.dark-sky { --wet: rgba(58, 116, 186, 0.60); --ice: rgba(140, 198, 232, 0.45); }
+body.dark-sky .cell.wet { box-shadow: inset 0 0 0 1.5px rgba(140, 195, 250, 0.5); }
+body.dark-sky .cell.wet::before { opacity: 1; }
+body.dark-sky .cell.ice { box-shadow: inset 0 0 0 1.5px rgba(200, 235, 252, 0.55); }
+body.dark-sky .cell.ice::before { color: #BFE4F8; opacity: 0.95; }
+body.dark-sky .tile.selected::before { outline-color: #AFD6F8; }
 
 #tiles { position: absolute; inset: 0; pointer-events: none; }
 .tile {
@@ -401,11 +423,12 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
 <div class="app">
   <header>
     <h1 class="logo" aria-label="Weather Match"><span class="logo-weather">WEATHER</span><span class="logo-match">MATCH</span></h1>
-    <span class="spacer"></span>
-    <button id="helpBtn" class="hbtn" aria-label="あそびかた">?</button>
-    <button id="areaBtn" class="hbtn" aria-label="予報エリアを変更">東京都 ▾</button>
-    <button id="muteBtn" class="hbtn" aria-label="ミュート">🔊</button>
-    <input id="volume" type="range" min="0" max="100" value="70" aria-label="音量">
+    <div class="hctrl">
+      <button id="helpBtn" class="hbtn" aria-label="あそびかた">?</button>
+      <button id="areaBtn" class="hbtn" aria-label="予報エリアを変更">東京都 ▾</button>
+      <button id="muteBtn" class="hbtn" aria-label="ミュート">🔊</button>
+      <input id="volume" type="range" min="0" max="100" value="70" aria-label="音量">
+    </div>
   </header>
 
   <section class="phase-card" aria-live="polite">
