@@ -887,12 +887,16 @@ p.note { font-size: 12px; color: #5A6774; }
       if (typeof w === "string") return { dirText: w, speed: null };
       const dirText = typeof w.direction === "string" ? w.direction
         : (w.direction && (w.direction.jp || w.direction.value)) || (typeof w.name === "string" ? w.name : null);
+      // 実測: rangeは m/s の範囲文字列(例:"6 9")、speedは風力階級寄りの小さい整数で
+      // 生のm/sとは限らない。m/sが分かるrangeを優先し、無ければspeedを補助的に使う
       let speed = null;
-      const rawSpeed = w.speed != null ? w.speed : w.value;
-      if (rawSpeed != null && Number.isFinite(parseInt(rawSpeed, 10))) speed = parseInt(rawSpeed, 10);
-      else if (typeof w.range === "string") {
-        const m = w.range.match(/(\d+)/g);
+      if (typeof w.range === "string") {
+        const m = w.range.match(/(\d+(?:\.\d+)?)/g);
         if (m) speed = Math.max(...m.map(Number));
+      }
+      if (speed == null) {
+        const rawSpeed = w.speed != null ? w.speed : w.value;
+        if (rawSpeed != null && Number.isFinite(parseFloat(rawSpeed))) speed = parseFloat(rawSpeed);
       }
       return dirText ? { dirText, speed } : null;
     } catch (e) { return null; }
@@ -2175,7 +2179,9 @@ document.addEventListener("wm-tests-done", () => {
     eq(W.strengthFromText("南の風 強く"), 2, "強く=2");
     eq(W.strengthFromText("北の風"), 0, "無印=0(穏やか)");
     // VPFD防御パース
-    eq(W.vpfdWindAt([{ direction: "北", speed: "7" }], 0).speed, 7, "オブジェクト形式");
+    eq(W.vpfdWindAt([{ direction: "北", speed: "7" }], 0).speed, 7, "range無しはspeedにフォールバック");
+    eq(W.vpfdWindAt([{ direction: "北西", speed: 3, range: "6 9" }], 0).speed, 9, "実データ構造: rangeの最大値(m/s)を優先しspeed(階級)は使わない");
+    eq(W.vpfdWindAt([{ direction: "南", speed: 1, range: "1 2" }], 0).speed, 2, "弱い風でもrange優先");
     eq(W.vpfdWindAt(["南西の風"], 0).dirText, "南西の風", "文字列形式");
     eq(W.vpfdWindAt(null, 0), null, "wind無しはnull");
     eq(W.vpfdWindAt([{}], 0), null, "空オブジェクトはnull");

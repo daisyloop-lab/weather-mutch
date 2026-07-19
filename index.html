@@ -1438,12 +1438,16 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       if (typeof w === "string") return { dirText: w, speed: null };
       const dirText = typeof w.direction === "string" ? w.direction
         : (w.direction && (w.direction.jp || w.direction.value)) || (typeof w.name === "string" ? w.name : null);
+      // 実測: rangeは m/s の範囲文字列(例:"6 9")、speedは風力階級寄りの小さい整数で
+      // 生のm/sとは限らない。m/sが分かるrangeを優先し、無ければspeedを補助的に使う
       let speed = null;
-      const rawSpeed = w.speed != null ? w.speed : w.value;
-      if (rawSpeed != null && Number.isFinite(parseInt(rawSpeed, 10))) speed = parseInt(rawSpeed, 10);
-      else if (typeof w.range === "string") {
-        const m = w.range.match(/(\d+)/g);
+      if (typeof w.range === "string") {
+        const m = w.range.match(/(\d+(?:\.\d+)?)/g);
         if (m) speed = Math.max(...m.map(Number));
+      }
+      if (speed == null) {
+        const rawSpeed = w.speed != null ? w.speed : w.value;
+        if (rawSpeed != null && Number.isFinite(parseFloat(rawSpeed))) speed = parseFloat(rawSpeed);
       }
       return dirText ? { dirText, speed } : null;
     } catch (e) { return null; }
@@ -1989,6 +1993,19 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
   let areaName = store.get("wm.areaName", "東京都");
   let selected = -1;
   let busy = false;         // アニメーション中の入力抑止
+  let busyWatchdog = 0;
+  /* busyをtrueにする唯一の入口。低電力モード等でアニメーション用setTimeoutが
+   * 抑制/遅延された場合に入力が永久に無視される事態を防ぐため、
+   * 一定時間で自動的にbusyを解除する安全弁を必ず併設する */
+  function setBusy(v, watchdogMs) {
+    busy = v;
+    clearTimeout(busyWatchdog);
+    if (v) {
+      busyWatchdog = setTimeout(() => {
+        if (busy) { busy = false; console.warn("Weather Match: busy watchdog fired (recovered from stalled animation)"); }
+      }, watchdogMs || 2500);
+    }
+  }
   let startedAt = null;
   let blockHintShown = { wet: false, ice: false };
   const tileEls = new Map(); // item object -> element
@@ -2006,17 +2023,11 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       result = { phases: W.buildPhasesFromForecast(W.mockForecast(now), now), mode: "demo", areaName: "デモ地方" };
     }
     phaseMeta = result;
-    // 診断情報: 「--%」等の調査用。発表切替の隙間(5/11/17時前後)の検出に使う
-    window.WMDebug = {
-      mode: result.mode,
-      areaCode,
-      debug: result.debug || null,
-      phases: result.phases.map((p) => ({ label: p.label, pops: p.pops, dominant: p.dominant, temp: p.temp, tempMax: p.tempMax, tempMin: p.tempMin,
-        wind: p.wind ? `${p.wind.dirName}/強度${p.wind.strength}` : null })),
-    };
-    console.info("Weather Match:", JSON.stringify(window.WMDebug));
+    window.WMFetchDebug = { mode: result.mode, areaCode, debug: result.debug || null,
+      phases: result.phases.map((p) => ({ label: p.label, pops: p.pops, dominant: p.dominant, wind: p.wind })) };
+    console.info("Weather Match boot:", JSON.stringify(window.WMFetchDebug));
     st = L.createState(result.phases);
-    selected = -1; busy = false;
+    selected = -1; setBusy(false);
     blockHintShown = { wet: false, ice: false };
     windHintShown = false;
     tileEls.clear();
@@ -2281,13 +2292,13 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
 
   /* ---------------- 1手の実行と演出 ---------------- */
   function playMove(from, to) {
-    busy = true;
+    setBusy(true);
     const mover = st.cells[from];
     // 消える可能性のある要素を先にスナップショット
     const snapshot = st.cells.map((it) => (it ? tileEls.get(it) : null));
     const r = L.applyMove(st, from, to);
     clearSelection();
-    if (!r.ok) { busy = false; return; }
+    if (!r.ok) { setBusy(false); return; }
     to = r.to; // 貫通スライドの実着地マス
 
     // 移動アニメーション: スライド距離に応じて時間を伸ばす(滑走感)
@@ -2352,7 +2363,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
   let timelapseTimer = 0;
   function finishTurn() {
     const ev = L.endTurn(st);
-    if (ev.ended) { renderAll(); showEnding(); busy = false; return; }
+    if (ev.ended) { renderAll(); showEnding(); setBusy(false); return; }
     const proceed = () => {
       if (ev.wind && ev.wind.moved.length && !reducedMotion) {
         boardEl().classList.add("board-wind"); // 駒がまとめて流れるゆったり遷移
@@ -2366,7 +2377,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       }
       for (const b of ev.blockedNew || []) maybeBlockHint(b.kind);
       if (ev.rescue) handleRescue(ev.rescue);
-      busy = false;
+      setBusy(false);
     };
     if (ev.phaseAdvanced) {
       // 音・バナー・タイル遷移・空の変化・光の奔流を同一タイミングで開始する
@@ -2398,7 +2409,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
           board.classList.remove("board-timelapse", "phase-shift");
           document.body.classList.remove("sky-quick", "sky-wash");
           if (ev.rescue) handleRescue(ev.rescue);
-          busy = false;
+          setBusy(false);
         }, TIMELAPSE_MS + 80);
         return;
       }
@@ -2793,6 +2804,11 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     $("#areaClose").addEventListener("click", () => { $("#areaModal").hidden = true; });
     $("#replayBtn").addEventListener("click", () => boot());
     window.addEventListener("resize", () => { if (st) renderTiles(true); });
+    // モバイルSafari対策: バックグラウンド復帰時、抑制されていたタイマーの巻き戻しで
+    // busyが固まっていた場合に備え、即座に入力を復旧させる
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && busy) setBusy(false);
+    });
     // モバイルSafari: ピンチ/ダブルタップズームを抑止し、ネイティブ操作感にする
     document.addEventListener("gesturestart", (e) => e.preventDefault());
     document.addEventListener("gesturechange", (e) => e.preventDefault());
@@ -2812,7 +2828,23 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
   window.WMDev = {
     getState: () => st,
     rerender: () => renderAll(true),
+    isBusy: () => busy,
+    forceUnstick: () => setBusy(false),
     logic: L, weather: W,
+  };
+  /* WMDebugは常に最新状態を返す関数として公開。風カウンターが動かない等の
+   * 不具合報告時、コンソールで `WMDebug()` を呼んでもらえば現在値を即確認できる */
+  window.WMDebug = () => {
+    if (!st) return null;
+    const ph = L.currentPhase(st);
+    const ws = L.windStatus(st);
+    return {
+      mode: phaseMeta && phaseMeta.mode, areaCode, busy,
+      phaseIndex: st.phaseIndex, quotaProgress: st.quotaProgress, quotaPerPhase: st.quotaPerPhase,
+      currentPhaseWind: ph && ph.wind, windCounter: st.windCounter, windTurnsToWind: ws ? ws.turnsToWind : null,
+      windDrifts: st.windDrifts, moveCount: st.moveCount,
+      allPhaseWinds: st.phases.map((p) => p.wind),
+    };
   };
 
   document.addEventListener("DOMContentLoaded", () => { wire(); boot(); });
