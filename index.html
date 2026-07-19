@@ -2,7 +2,11 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#7FB4E6">
 <title>ウェザー・マッチ | Weather Match</title>
 <meta name="description" content="気象庁の天気予報データで遊ぶ、同じ天気を同調させて消すターン制パズル。出典: 気象庁ホームページ">
 <style>
@@ -30,7 +34,7 @@
   --radius: 18px;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html { height: 100%; }
+html { height: 100%; touch-action: manipulation; overscroll-behavior: none; }
 body {
   min-height: 100%;
   font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif;
@@ -43,6 +47,10 @@ body {
   padding: max(10px, env(safe-area-inset-top)) 12px 24px;
   user-select: none;
   -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+  overscroll-behavior: none;
+  min-height: 100dvh;
 }
 body.dark-sky { --ink: #F2F6FA; --ink-soft: #C4CEDA; --card: rgba(22, 30, 42, 0.55); --card-line: rgba(255,255,255,0.14); }
 body.sky-quick { transition: background 0.72s ease-in-out; }
@@ -85,7 +93,8 @@ button { font-family: inherit; color: inherit; }
   border-radius: 999px; padding: 7px 12px; font-size: 12px; cursor: pointer;
   backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
 }
-#muteBtn { width: 38px; text-align: center; padding: 7px 0; }
+#muteBtn, #helpBtn { width: 38px; text-align: center; padding: 7px 0; }
+#helpBtn { font-weight: 700; }
 #volume { width: 64px; accent-color: var(--accent); }
 
 /* ---- フェーズカード(観測カード) ---- */
@@ -100,15 +109,49 @@ button { font-family: inherit; color: inherit; }
   font-variant-numeric: tabular-nums; font-family: "Hiragino Kaku Gothic ProN", ui-monospace, monospace;
 }
 #phaseText { font-size: 12px; color: var(--ink-soft); }
-#phaseDots { margin-left: auto; display: flex; gap: 5px; }
-.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--card-line); }
-.dot.done { background: var(--ink-soft); }
-.dot.now { background: var(--accent); box-shadow: 0 0 0 3px rgba(46,111,176,0.18); }
+/* 24時間タイムライン: 予報の帯の上を「いま」が進む */
+#timeline { position: relative; margin-top: 12px; }
+#tlTrack {
+  display: flex; height: 24px; border-radius: 7px; overflow: hidden;
+  border: 1px solid var(--card-line);
+}
+.tl-seg {
+  position: relative; display: flex; align-items: center; justify-content: center;
+  transition: opacity 0.6s, filter 0.6s; min-width: 0;
+}
+.tl-seg .tl-wx { font-size: 11px; line-height: 1; }
+.tl-seg .tl-hh {
+  position: absolute; left: 2px; top: 1px; font-size: 7px; font-weight: 700;
+  color: rgba(38, 49, 63, 0.55); font-variant-numeric: tabular-nums; letter-spacing: 0;
+}
+.tl-seg + .tl-seg { border-left: 1px solid rgba(38, 49, 63, 0.10); }
+.tl-seg.past { opacity: 0.38; filter: grayscale(0.8); }
+.tl-seg.now { box-shadow: inset 0 0 0 1.5px var(--accent); }
+#tlCursor {
+  position: absolute; top: -4px; bottom: -4px; width: 2.5px; margin-left: -1px;
+  background: var(--accent); border-radius: 2px;
+  box-shadow: 0 0 8px rgba(46, 111, 176, 0.8);
+  transition: left 0.55s cubic-bezier(0.3, 0.7, 0.3, 1);
+}
+#tlCursor::after {
+  content: "いま"; position: absolute; top: -12px; left: 50%; translate: -50% 0;
+  font-size: 8px; font-weight: 700; color: var(--accent); letter-spacing: 0.05em; white-space: nowrap;
+}
+body.dark-sky #tlCursor { background: #9EC9F2; box-shadow: 0 0 8px rgba(158, 201, 242, 0.9); }
+body.dark-sky #tlCursor::after { color: #9EC9F2; }
+@media (prefers-reduced-motion: reduce) { #tlCursor, .tl-seg { transition: none; } }
 .phase-read { display: flex; align-items: center; gap: 16px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--card-line); }
 .read { display: flex; flex-direction: column; }
 .read b { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .read span { font-size: 10px; color: var(--ink-soft); letter-spacing: 0.08em; }
-#quota { display: flex; gap: 5px; margin-left: auto; align-items: center; }
+.read.remain { margin-left: auto; align-items: flex-end; }
+.read.remain b { color: var(--accent); }
+body.dark-sky .read.remain b { color: #9EC9F2; }
+.read.remain b.final-push { color: #C25A2E; animation: remainPulse 0.9s ease infinite; }
+body.dark-sky .read.remain b.final-push { color: #FFB98A; }
+@keyframes remainPulse { 50% { scale: 1.2; } }
+@media (prefers-reduced-motion: reduce) { .read.remain b.final-push { animation: none; } }
+#quota { display: flex; gap: 5px; margin-left: 12px; align-items: center; }
 .q { width: 12px; height: 12px; border-radius: 4px; border: 1.5px solid var(--ink-soft); opacity: 0.5; }
 .q.filled { background: var(--accent); border-color: var(--accent); opacity: 1; }
 #srcBadge {
@@ -289,6 +332,9 @@ body.dark-sky .panel { background: rgba(22, 30, 42, 0.9); }
 #endStars { font-size: 34px; letter-spacing: 0.1em; margin: 4px 0 2px; }
 .star { color: var(--card-line); }
 .star.on { color: #F2B03D; text-shadow: 0 0 12px rgba(242,176,61,0.5); }
+#endComments { margin: 2px 0 6px; }
+.end-comment { font-size: 12.5px; font-weight: 700; color: var(--accent); line-height: 1.8; }
+body.dark-sky .end-comment { color: #9EC9F2; }
 #endDigest { font-size: 17px; font-weight: 700; margin: 8px 0 4px; letter-spacing: 0.04em; }
 #endStats { font-size: 12px; color: var(--ink-soft); margin-bottom: 12px; }
 #endTimeline { display: flex; flex-direction: column; gap: 2px; margin: 10px 0 14px; }
@@ -323,6 +369,18 @@ body.dark-sky .dex-card { background: rgba(255,255,255,0.08); }
 .dex-desc { font-size: 9px; color: var(--ink-soft); line-height: 1.5; }
 .dex-date { font-size: 8.5px; color: var(--ink-soft); margin-top: auto; opacity: 0.8; }
 
+/* ---- ヘルプ ---- */
+.help-panel { text-align: left; }
+#helpTitle { font-size: 15px; font-weight: 700; flex: 1; text-align: center; }
+.help-body h3 {
+  font-size: 12.5px; margin: 14px 0 4px; color: var(--accent);
+  letter-spacing: 0.06em;
+}
+body.dark-sky .help-body h3 { color: #9EC9F2; }
+.help-body h3:first-child { margin-top: 0; }
+.help-body p { font-size: 11.5px; line-height: 1.85; color: var(--ink); }
+.help-body b { font-weight: 700; }
+
 /* ---- エリア選択 ---- */
 .area-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 #areaTitle { font-size: 15px; font-weight: 700; flex: 1; text-align: center; }
@@ -344,6 +402,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
   <header>
     <h1 class="logo" aria-label="Weather Match"><span class="logo-weather">WEATHER</span><span class="logo-match">MATCH</span></h1>
     <span class="spacer"></span>
+    <button id="helpBtn" class="hbtn" aria-label="あそびかた">?</button>
     <button id="areaBtn" class="hbtn" aria-label="予報エリアを変更">東京都 ▾</button>
     <button id="muteBtn" class="hbtn" aria-label="ミュート">🔊</button>
     <input id="volume" type="range" min="0" max="100" value="70" aria-label="音量">
@@ -354,11 +413,15 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     <div class="phase-top">
       <span id="phaseTime">--:--</span>
       <span id="phaseText"></span>
-      <span id="phaseDots"></span>
+    </div>
+    <div id="timeline" aria-label="24時間の進行">
+      <div id="tlTrack"></div>
+      <div id="tlCursor"></div>
     </div>
     <div class="phase-read">
       <span class="read"><b id="phasePops">--%</b><span>降水確率</span></span>
       <span class="read"><b id="phaseTemp">--</b><span>気温</span></span>
+      <span class="read remain"><b id="remainN">--</b><span>クリアまで</span></span>
       <span id="quota" aria-label="このフェーズの消去ノルマ"></span>
     </div>
     <span id="srcBadge"></span>
@@ -394,12 +457,45 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
 <div id="ending" class="overlay" hidden>
   <div class="panel">
     <div id="endStars"></div>
+    <div id="endComments"></div>
     <div id="endDigest"></div>
     <div id="endStats"></div>
     <div id="endTimeline"></div>
     <div id="endOnce"></div>
     <button id="replayBtn" class="primary">最新の予報でもう一度</button>
     <div class="end-note">出典: 気象庁ホームページ(加工して利用)</div>
+  </div>
+</div>
+
+<div id="helpModal" class="overlay" hidden>
+  <div class="panel help-panel">
+    <div class="dex-head">
+      <span id="helpTitle">あそびかた</span>
+      <button id="helpClose" class="area-nav">閉じる</button>
+    </div>
+    <div class="help-body">
+      <h3>きほん</h3>
+      <p>駒をタップ → 行き先をタップ。<b>同じ天気に重なると同調して消えます</b>(=1マージ)。各時間帯のノルマ(□)を満たすと予報の時間が進み、24時間ぶん進めばクリア。手数が少ないほど★が増えます。失敗はありません(手詰まりは自動救済)。</p>
+      <h3>駒のうごき</h3>
+      <p>☀️ 晴れ — <b>縦横に滑走</b>(まっすぐ遠くまで)<br>
+         ☂️ 雨 — <b>縦にだけ滑走</b>(降るものは縦)<br>
+         ❄️ 雪 — <b>横にだけ滑走</b>(風に流される)<br>
+         ☁️ くもり・特殊駒 — <b>8方向に1歩</b>(斜めが使える)</p>
+      <h3>滑走のルール</h3>
+      <p>滑走する駒は、<b>障害物(盤の端・ちがう天気・濡れ/凍結マス)に当たるまで止まれません</b>。ただし<b>同じ天気は素通りして巻き込み、まとめて消せます</b>(貫通)。一直線に並べてから撃つのがコツ。巻き込み対象を直接タップしてもOK。</p>
+      <h3>消したときのスキル</h3>
+      <p>☀️ 着地マスの周囲8マスの濡れ/凍結を乾かす<br>
+         ☂️ 着地マスの縦1列をまとめて洗い流す<br>
+         ❄️ 着地マスの横1列をブリザードで消す</p>
+      <h3>濡れマス 💧 / 凍結マス ❄</h3>
+      <p>降水確率が高い時間帯・雪の時間帯に現れる<b>入れないマス</b>。数ターンで自然に消えます。滑走が止まるので<b>「壁」として利用</b>もできます。</p>
+      <h3>特殊駒(チャンス)</h3>
+      <p>その日の予報が条件を満たすと出現します。同じ特殊駒を重ねると発動:<br>
+         🔥 猛暑日(最高35°C以上) / 🧊 真冬日(最高0°C以下など) — <b>盤面全消去</b><br>
+         💧 降水確率70%以上 / ⚡️ 予報文に「雷」 — <b>3×3範囲消去</b></p>
+      <h3>予告と図鑑</h3>
+      <p>「つぎ」は次に現れる駒の予告。時間帯が変わると新しい天気で引き直されます。消した天気や特別な気象条件の日は「図鑑」に記録されます。</p>
+    </div>
   </div>
 </div>
 
@@ -534,6 +630,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       rescueCount: 0,
       skillsUsed: {},              // このプレイで発動したスキル種(図鑑用)
       lastMovePairs: 0,            // 直前手のマージペア数(加圧スポーン判定用)
+      sweepTotal: 0,               // 巻き込み消去の累計(評価コメント用)
       ended: false,
     };
     seedInitialItems(st, CONFIG.initialItems);
@@ -708,6 +805,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     to = dest;
     st.moveCount++;
     st.lastMovePairs = partners.size;
+    st.sweepTotal += (t.sweeps || []).length;
 
     let cleared = [], pairs = 0, chanceEffect = null, skillEffect = null;
     if (partners.size > 0) {
@@ -1050,6 +1148,43 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     return ids;
   }
 
+  /* クリアまでの残りマージ数(現フェーズの残り+以降フェーズの全ノルマ) */
+  function remainingQuota(st) {
+    const phasesLeft = st.phases.length - st.phaseIndex; // 現フェーズ含む
+    return Math.max(0, phasesLeft * st.quotaPerPhase - st.quotaProgress);
+  }
+
+  /* エンディングのひとことコメント(最大2件)。
+   * ref = { avgMoves, avgChains, avgCombo, plays } 自己平均(履歴が無ければnull可) */
+  function endingComments(st, ref) {
+    const out = [];
+    const par = Math.round(st.quotaPerPhase * st.phases.length * CONFIG.parFactorFor(st.phases.length));
+    const r = ref || {};
+    // 1) 手数: 自己平均と比較(履歴があれば)、無ければpar基準
+    if (r.plays >= 1 && Number.isFinite(r.avgMoves)) {
+      const d = Math.round(r.avgMoves - st.moveCount);
+      if (d >= 3) out.push(`自己平均より${d}手少ないクリア!`);
+      else if (d <= -3) out.push(`じっくり型: 自己平均より${-d}手多め`);
+      else out.push("自己平均どおりの安定したクリア");
+    } else {
+      if (st.effectiveMoves <= par) out.push(`標準手数(${par}手)以内の効率クリア!`);
+      else out.push(`まずは完走! 次は標準手数${par}手が目標`);
+    }
+    // 2) 連鎖・コンボ・巻き込み・自力(優先順)
+    if (r.plays >= 1 && Number.isFinite(r.avgChains) && st.chainCount >= r.avgChains + 1 && st.chainCount >= 2) {
+      out.push(`連鎖${st.chainCount}回は自己平均超え`);
+    } else if (st.chainCount >= 3) {
+      out.push(`連鎖${st.chainCount}回 — 同時消しが冴えている`);
+    } else if (st.maxCombo >= 6) {
+      out.push(`最大コンボ${st.maxCombo} — 流れが途切れない`);
+    } else if (st.sweepTotal >= 8) {
+      out.push(`巻き込み${st.sweepTotal}個 — 貫通の使い手`);
+    } else if (st.rescueCount === 0) {
+      out.push("救済なしの自力観測");
+    }
+    return out.slice(0, 2);
+  }
+
   /* ---------------- 効率評価(星3段階) ---------------- */
   function starRating(st) {
     const totalQuota = st.quotaPerPhase * st.phases.length;
@@ -1086,7 +1221,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     createState, currentPhase, rollType, chanceEligible,
     emptyCells, validTargets, applyMove, endTurn, fireSkill, fillSpawnQueue,
     DEX, dexOnMerge, dexOnEnding, DIRS, MOVEMENT, movementFor,
-    anyValidMove, rescue, starRating, weatherDigest,
+    anyValidMove, rescue, starRating, weatherDigest, remainingQuota, endingComments,
     blockRuleFor, spawnBlocks,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
@@ -1725,11 +1860,13 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     tileEls.clear();
     $("#tiles").innerHTML = "";
     $("#ending").hidden = true;
+    buildTimeline();
+    remainToastShown = false;
     renderAll(true);
     setStatus("");
     let hintDelay = 0;
     if (!store.get("wm.tutorial", false)) {
-      showToast("同じ天気を重ねて消し、時間を進めよう", "tutorial", 3000);
+      showToast("同じ天気を重ねて消し、時間を進めよう(ルールは左上の?)", "tutorial", 3200);
       store.set("wm.tutorial", true);
       hintDelay = 3200; // チュートリアル表示と重ならないよう遅延
     }
@@ -1766,6 +1903,35 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
   }
 
   const WDAY = ["日", "月", "火", "水", "木", "金", "土"];
+  let remainToastShown = false;
+
+  /* 24時間タイムライン: 予報の帯(各フェーズの天気で着色)を一度構築する */
+  const TL_TINT = { sun: "#FFE3A8", cloud: "#D9E0EA", rain: "#B7D7F2", snow: "#E5F3FC", mixed: "#D8E6F5" };
+  function buildTimeline() {
+    const track = $("#tlTrack");
+    track.innerHTML = "";
+    const total = st.phases.reduce((a, p) => a + (p.end - p.start), 0);
+    for (const p of st.phases) {
+      const seg = document.createElement("div");
+      seg.className = "tl-seg";
+      seg.style.width = ((p.end - p.start) / total * 100) + "%";
+      seg.style.background = TL_TINT[p.dominant] || TL_TINT.cloud;
+      const j = new Date(p.start.getTime() + 9 * 3600e3);
+      seg.innerHTML = `<span class="tl-hh">${String(j.getUTCHours()).padStart(2, "0")}</span>` +
+                      `<span class="tl-wx">${GLYPH[p.dominant] || "☁️"}</span>`;
+      seg.title = `${p.label} ${NAME[p.dominant] || ""}`;
+      track.appendChild(seg);
+    }
+  }
+  /* 「いま」カーソル位置: 消化済みフェーズ+現フェーズのノルマ進捗ぶんだけ時間が進む */
+  function timelineFraction() {
+    const total = st.phases.reduce((a, p) => a + (p.end - p.start), 0);
+    let acc = 0;
+    for (let i = 0; i < st.phaseIndex; i++) acc += st.phases[i].end - st.phases[i].start;
+    const cur = st.phases[st.phaseIndex];
+    if (cur) acc += (cur.end - cur.start) * Math.min(1, st.quotaProgress / st.quotaPerPhase);
+    return Math.min(1, acc / total);
+  }
   function jstDateLabel(d) {
     const j = new Date(d.getTime() + 9 * 3600e3);
     return `${j.getUTCMonth() + 1}月${j.getUTCDate()}日(${WDAY[j.getUTCDay()]})`;
@@ -1787,12 +1953,22 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       if (ph.tempMin != null) t.push(`最低${ph.tempMin}°`);
     }
     $("#phaseTemp").textContent = t.join(" / ") || "--";
-    // フェーズ進捗ドット
-    const dots = st.phases.map((_, i) => {
-      const cls = i < st.phaseIndex ? "done" : i === st.phaseIndex ? "now" : "";
-      return `<span class="dot ${cls}"></span>`;
-    }).join("");
-    $("#phaseDots").innerHTML = dots;
+    // タイムライン: 「いま」カーソルを進め、過ぎた時間帯をグレーアウト
+    $("#tlCursor").style.left = (timelineFraction() * 100) + "%";
+    [...$("#tlTrack").children].forEach((seg, i) => {
+      seg.classList.toggle("past", i < st.phaseIndex);
+      seg.classList.toggle("now", i === st.phaseIndex);
+    });
+    // クリアまでの残りマージ数(終盤はラストスパート表示)
+    const remain = L.remainingQuota(st);
+    const rEl = $("#remainN");
+    rEl.textContent = remain;
+    const isFinalPhase = st.phaseIndex === st.phases.length - 1;
+    rEl.classList.toggle("final-push", isFinalPhase && remain <= 3 && remain > 0);
+    if (isFinalPhase && remain === 3 && !remainToastShown && !st.ended) {
+      remainToastShown = true;
+      showToast("ラストスパート! クリアまであと3", "chain");
+    }
     // ノルマ
     const q = [];
     for (let i = 0; i < st.quotaPerPhase; i++) q.push(`<span class="q ${i < st.quotaProgress ? "filled" : ""}"></span>`);
@@ -2013,9 +2189,12 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       const ph = L.currentPhase(st);
       const prev = st.phases[st.phaseIndex - 1];
       const dayChanged = prev && jstDateLabel(prev.start) !== jstDateLabel(ph.start);
+      const isFinal = st.phaseIndex === st.phases.length - 1;
+      const sub = isFinal ? (dayChanged ? `最終フェーズ · ${jstDateLabel(ph.start)}` : "最終フェーズ")
+                          : (dayChanged ? jstDateLabel(ph.start) + " へ" : "");
       Sound.phase();
       emitTimeStreaks();
-      showTimeBanner(ph.label, dayChanged ? jstDateLabel(ph.start) + " へ" : "");
+      showTimeBanner(ph.label, sub);
       if (!reducedMotion) {
         const board = boardEl();
         clearTimeout(timelapseTimer);
@@ -2282,6 +2461,18 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     const areas = store.get("wm.areasCleared", []);
     if (!areas.includes(areaCode)) { areas.push(areaCode); store.set("wm.areasCleared", areas); }
     unlockDex(L.dexOnEnding(st, { playDays: days.length, areasCleared: areas.length }));
+    // ひとことコメント: 過去プレイの自己平均と比較(履歴が無ければ標準手数基準)
+    const hist = store.get("wm.history", []);
+    const ref = hist.length ? {
+      plays: hist.length,
+      avgMoves: hist.reduce((a, h) => a + h.moves, 0) / hist.length,
+      avgChains: hist.reduce((a, h) => a + h.chains, 0) / hist.length,
+      avgCombo: hist.reduce((a, h) => a + h.combo, 0) / hist.length,
+    } : null;
+    const comments = L.endingComments(st, ref);
+    $("#endComments").innerHTML = comments.map((c) => `<div class="end-comment">${c}</div>`).join("");
+    hist.push({ moves: st.moveCount, chains: st.chainCount, combo: st.maxCombo, stars: L.starRating(st) });
+    store.set("wm.history", hist.slice(-50));
     const stars = L.starRating(st);
     $("#endStars").innerHTML = [1, 2, 3].map((i) => `<span class="star ${i <= stars ? "on" : ""}">★</span>`).join("");
     const digest = L.weatherDigest(st.phases);
@@ -2369,12 +2560,19 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     $("#volume").value = Math.round(Sound.volume * 100);
     updateMuteBtn();
     $("#areaBtn").addEventListener("click", openAreaPicker);
+    $("#helpBtn").addEventListener("click", () => { $("#helpModal").hidden = false; });
+    $("#helpClose").addEventListener("click", () => { $("#helpModal").hidden = true; });
     $("#dexBtn").addEventListener("click", () => { renderDex(); $("#dexModal").hidden = false; });
     $("#dexClose").addEventListener("click", () => { $("#dexModal").hidden = true; });
     updateDexBtn();
     $("#areaClose").addEventListener("click", () => { $("#areaModal").hidden = true; });
     $("#replayBtn").addEventListener("click", () => boot());
     window.addEventListener("resize", () => { if (st) renderTiles(true); });
+    // モバイルSafari: ピンチ/ダブルタップズームを抑止し、ネイティブ操作感にする
+    document.addEventListener("gesturestart", (e) => e.preventDefault());
+    document.addEventListener("gesturechange", (e) => e.preventDefault());
+    document.addEventListener("dblclick", (e) => e.preventDefault());
+    boardEl().addEventListener("touchend", (e) => e.preventDefault(), { passive: false });
     if (!store.persistent) {
       console.info("Weather Match: この環境では設定を保存できません(メモリ内のみ)。GitHub Pages等の通常ブラウザでは保存されます。");
     }

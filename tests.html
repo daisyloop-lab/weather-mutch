@@ -125,6 +125,7 @@ p.note { font-size: 12px; color: #5A6774; }
       rescueCount: 0,
       skillsUsed: {},              // このプレイで発動したスキル種(図鑑用)
       lastMovePairs: 0,            // 直前手のマージペア数(加圧スポーン判定用)
+      sweepTotal: 0,               // 巻き込み消去の累計(評価コメント用)
       ended: false,
     };
     seedInitialItems(st, CONFIG.initialItems);
@@ -299,6 +300,7 @@ p.note { font-size: 12px; color: #5A6774; }
     to = dest;
     st.moveCount++;
     st.lastMovePairs = partners.size;
+    st.sweepTotal += (t.sweeps || []).length;
 
     let cleared = [], pairs = 0, chanceEffect = null, skillEffect = null;
     if (partners.size > 0) {
@@ -641,6 +643,43 @@ p.note { font-size: 12px; color: #5A6774; }
     return ids;
   }
 
+  /* クリアまでの残りマージ数(現フェーズの残り+以降フェーズの全ノルマ) */
+  function remainingQuota(st) {
+    const phasesLeft = st.phases.length - st.phaseIndex; // 現フェーズ含む
+    return Math.max(0, phasesLeft * st.quotaPerPhase - st.quotaProgress);
+  }
+
+  /* エンディングのひとことコメント(最大2件)。
+   * ref = { avgMoves, avgChains, avgCombo, plays } 自己平均(履歴が無ければnull可) */
+  function endingComments(st, ref) {
+    const out = [];
+    const par = Math.round(st.quotaPerPhase * st.phases.length * CONFIG.parFactorFor(st.phases.length));
+    const r = ref || {};
+    // 1) 手数: 自己平均と比較(履歴があれば)、無ければpar基準
+    if (r.plays >= 1 && Number.isFinite(r.avgMoves)) {
+      const d = Math.round(r.avgMoves - st.moveCount);
+      if (d >= 3) out.push(`自己平均より${d}手少ないクリア!`);
+      else if (d <= -3) out.push(`じっくり型: 自己平均より${-d}手多め`);
+      else out.push("自己平均どおりの安定したクリア");
+    } else {
+      if (st.effectiveMoves <= par) out.push(`標準手数(${par}手)以内の効率クリア!`);
+      else out.push(`まずは完走! 次は標準手数${par}手が目標`);
+    }
+    // 2) 連鎖・コンボ・巻き込み・自力(優先順)
+    if (r.plays >= 1 && Number.isFinite(r.avgChains) && st.chainCount >= r.avgChains + 1 && st.chainCount >= 2) {
+      out.push(`連鎖${st.chainCount}回は自己平均超え`);
+    } else if (st.chainCount >= 3) {
+      out.push(`連鎖${st.chainCount}回 — 同時消しが冴えている`);
+    } else if (st.maxCombo >= 6) {
+      out.push(`最大コンボ${st.maxCombo} — 流れが途切れない`);
+    } else if (st.sweepTotal >= 8) {
+      out.push(`巻き込み${st.sweepTotal}個 — 貫通の使い手`);
+    } else if (st.rescueCount === 0) {
+      out.push("救済なしの自力観測");
+    }
+    return out.slice(0, 2);
+  }
+
   /* ---------------- 効率評価(星3段階) ---------------- */
   function starRating(st) {
     const totalQuota = st.quotaPerPhase * st.phases.length;
@@ -677,7 +716,7 @@ p.note { font-size: 12px; color: #5A6774; }
     createState, currentPhase, rollType, chanceEligible,
     emptyCells, validTargets, applyMove, endTurn, fireSkill, fillSpawnQueue,
     DEX, dexOnMerge, dexOnEnding, DIRS, MOVEMENT, movementFor,
-    anyValidMove, rescue, starRating, weatherDigest,
+    anyValidMove, rescue, starRating, weatherDigest, remainingQuota, endingComments,
     blockRuleFor, spawnBlocks,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
@@ -1960,6 +1999,51 @@ document.addEventListener("wm-tests-done", () => {
     const ts3 = L.validTargets(st3, L.idx(0, 0, 6));
     const r3 = ts3.find((t) => t.to === L.idx(1, 0, 6));
     assert(r3 && r3.kind === "move" && (!r3.sweeps || !r3.sweeps.length), "壁の向こうは巻き込まない");
+  })();
+
+  /* ================= 27c. クリア可視化と評価コメント ================= */
+  (function () {
+    // remainingQuota
+    const st = mkState(calmPhases(4));
+    const q = st.quotaPerPhase;
+    eq(L.remainingQuota(st), q * 4, "開始時の残り=総ノルマ");
+    st.quotaProgress = 2;
+    eq(L.remainingQuota(st), q * 4 - 2, "進捗ぶん減る");
+    st.phaseIndex = 3; st.quotaProgress = q - 1;
+    eq(L.remainingQuota(st), 1, "最終フェーズ残り1");
+    st.quotaProgress = q + 5;
+    eq(L.remainingQuota(st), 0, "超過しても負にならない");
+
+    // sweepTotal
+    const st2 = mkState();
+    clearBoard(st2);
+    st2.cells[L.idx(0, 2, 6)] = { type: "sun" };
+    st2.cells[L.idx(2, 2, 6)] = { type: "sun" };
+    st2.cells[L.idx(4, 2, 6)] = { type: "sun" };
+    st2.cells[L.idx(5, 2, 6)] = { type: "cloud" };
+    L.applyMove(st2, L.idx(0, 2, 6), L.idx(2, 2, 6));
+    eq(st2.sweepTotal, 2, "巻き込み累計を記録");
+
+    // endingComments
+    const mkEnd = (over) => Object.assign({
+      quotaPerPhase: 4, phases: calmPhases(8), moveCount: 40, effectiveMoves: 38,
+      chainCount: 1, maxCombo: 3, sweepTotal: 2, rescueCount: 0,
+    }, over);
+    let c = L.endingComments(mkEnd({ moveCount: 35 }), { plays: 5, avgMoves: 45, avgChains: 2, avgCombo: 4 });
+    assert(c[0].includes("10手少ない"), "自己平均より少ない手数コメント");
+    c = L.endingComments(mkEnd({ moveCount: 50 }), { plays: 5, avgMoves: 45, avgChains: 2 });
+    assert(c[0].includes("5手多め"), "多め手数コメント");
+    c = L.endingComments(mkEnd({}), null);
+    assert(c[0].includes("標準手数"), "履歴なしはpar基準");
+    c = L.endingComments(mkEnd({ effectiveMoves: 999 }), null);
+    assert(c[0].includes("目標"), "par超過は次回目標を提示");
+    c = L.endingComments(mkEnd({ chainCount: 4 }), { plays: 3, avgMoves: 40, avgChains: 2 });
+    assert(c.some((x) => x.includes("自己平均超え")), "連鎖の自己平均超えコメント");
+    c = L.endingComments(mkEnd({ chainCount: 0, maxCombo: 7 }), null);
+    assert(c.some((x) => x.includes("コンボ7")), "コンボコメント");
+    c = L.endingComments(mkEnd({ chainCount: 0, maxCombo: 2, sweepTotal: 9 }), null);
+    assert(c.some((x) => x.includes("巻き込み9個")), "巻き込みコメント");
+    eq(c.length <= 2, true, "コメントは最大2件");
   })();
 
   /* ================= 28. 天気図鑑の判定 ================= */
