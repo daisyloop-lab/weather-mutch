@@ -468,29 +468,23 @@ p.note { font-size: 12px; color: #5A6774; }
     return ev;
   }
 
-  /* 風の状態(UI表示用): {dirName, dx, dy, strength, turnsToWind} | null */
+  /* 風の状態(UI表示用): {dirName, dx, dy, strength, turnsToWind, jammed} | null。
+   * jammed: 周期到来済みだが盤面がその方向へ押し固まっていて動かせる駒が無い状態
+   * (足止め中)。UIで「風まで足止め中」等の表示に使う */
   function windStatus(st) {
     const w = currentPhase(st) && currentPhase(st).wind;
     if (!w || !w.strength) return null;
     const interval = CONFIG.windInterval[w.strength] || 4;
-    return Object.assign({}, w, { turnsToWind: Math.max(0, interval - st.windCounter) });
+    const jammed = st.windCounter >= interval - 1 && planWindDrift(st, w).moved.length === 0;
+    return Object.assign({}, w, { turnsToWind: Math.max(0, interval - st.windCounter), jammed });
   }
 
-  /* 周期到来なら全駒を風下へ1マス流す(風下側の駒から処理=列ごと押し流される)。
-   * 移動先が盤内かつ空きかつ非ブロックの駒だけ動く。自動マージはしない。 */
-  function maybeWindDrift(st) {
-    const w = currentPhase(st) && currentPhase(st).wind;
-    // 穏やかな時間帯は計数を「一時停止」(リセットしない)。
-    // 3時間スロットの風速は閾値前後でゆらぐため、リセットすると
-    // 断続的な風の日に永遠に発火しなくなる
-    if (!w || !w.strength) { return null; }
-    const interval = CONFIG.windInterval[w.strength] || 4;
-    st.windCounter++;
-    if (st.windCounter < interval) return null;
-    st.windCounter = 0;
+  /* 実際に何マス動かせるかを事前計算する(盤面を変更しない dry-run)。
+   * 風下側(移動先方向に遠い駒)から処理し、連鎖的な詰め込みを許す。 */
+  function planWindDrift(st, w) {
+    const cells = st.cells.slice(); // dry-run用の作業コピー(参照はそのまま、書き換えのみ複製)
     const order = [];
-    for (let i = 0; i < st.cells.length; i++) if (st.cells[i]) order.push(i);
-    // 風下側(移動先方向に遠い駒)から処理する
+    for (let i = 0; i < cells.length; i++) if (cells[i]) order.push(i);
     order.sort((a, b) => {
       const [ax, ay] = xy(a, st.w), [bx, by] = xy(b, st.w);
       return (bx * w.dx + by * w.dy) - (ax * w.dx + ay * w.dy);
@@ -501,13 +495,40 @@ p.note { font-size: 12px; color: #5A6774; }
       const nx = x + w.dx, ny = y + w.dy;
       if (nx < 0 || ny < 0 || nx >= st.w || ny >= st.h) continue;
       const ni = idx(nx, ny, st.w);
-      if (st.cells[ni] || st.blocked[ni]) continue;
-      st.cells[ni] = st.cells[i];
-      st.cells[i] = null;
+      if (cells[ni] || st.blocked[ni]) continue;
+      cells[ni] = cells[i];
+      cells[i] = null;
       moved.push({ from: i, to: ni });
     }
+    return { cells, moved };
+  }
+
+  /* 周期到来なら全駒を風下へ1マス流す(風下側の駒から処理=列ごと押し流される)。
+   * 移動先が盤内かつ空きかつ非ブロックの駒だけ動く。自動マージはしない。
+   *
+   * 盤面がその方向へ既に押し固まっていて1マスも動かせない場合、
+   * 「発火はしたが何も起きない」を消費してカウンターだけ空回りさせるのを避けるため、
+   * 周期到来を一時的に足止め(windCounter を interval-1 に据え置き)し、
+   * 次のターン以降、動かせる駒が生まれ次第すぐ発火できるようにする。 */
+  function maybeWindDrift(st) {
+    const w = currentPhase(st) && currentPhase(st).wind;
+    // 穏やかな時間帯は計数を「一時停止」(リセットしない)。
+    // 3時間スロットの風速は閾値前後でゆらぐため、リセットすると
+    // 断続的な風の日に永遠に発火しなくなる
+    if (!w || !w.strength) { return null; }
+    const interval = CONFIG.windInterval[w.strength] || 4;
+    st.windCounter++;
+    if (st.windCounter < interval) return null;
+    const plan = planWindDrift(st, w);
+    if (!plan.moved.length) {
+      // 動かせる駒が無い: 消費せず足止め。空きができ次第、次のターンで即発火する
+      st.windCounter = interval - 1;
+      return null;
+    }
+    st.windCounter = 0;
+    st.cells = plan.cells;
     st.windDrifts++;
-    return { dirName: w.dirName, dx: w.dx, dy: w.dy, strength: w.strength, moved };
+    return { dirName: w.dirName, dx: w.dx, dy: w.dy, strength: w.strength, moved: plan.moved };
   }
 
   function advancePhase(st, ev) {
@@ -770,7 +791,7 @@ p.note { font-size: 12px; color: #5A6774; }
     emptyCells, validTargets, applyMove, endTurn, fireSkill, fillSpawnQueue,
     DEX, dexOnMerge, dexOnEnding, DIRS, MOVEMENT, movementFor,
     anyValidMove, rescue, starRating, weatherDigest, remainingQuota, endingComments,
-    windStatus, maybeWindDrift,
+    windStatus, maybeWindDrift, planWindDrift,
     blockRuleFor, spawnBlocks,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
@@ -2224,6 +2245,53 @@ document.addEventListener("wm-tests-done", () => {
     st2.cells[0] = { type: "sun" };
     for (let t = 0; t < 8; t++) { st2.quotaProgress = 0; const ev = L.endTurn(st2); assert(!ev.wind, "穏やかな日はドリフトなし t" + t); }
     eq(L.windStatus(st2), null, "穏やかな日は風ステータスなし");
+  })();
+
+  /* ================= 27d2. 風: 押し固まり時の足止め(連続同方向の回帰) ================= */
+  (function () {
+    const windyPh = ph({ wind: { dirName: "北西", dx: 1, dy: 1, strength: 1 } });
+    const interval = L.CONFIG.windInterval[1];
+    // 全画面が埋まっている(移動先が常に埋まっている)→動かせる駒ゼロ
+    const st = mkState(Array(8).fill(windyPh), 3);
+    for (let i = 0; i < 36; i++) st.cells[i] = { type: L.BASE_TYPES[i % 4] };
+    st.blocked = {};
+    for (let t = 0; t < interval; t++) L.maybeWindDrift(st);
+    eq(st.windDrifts, 0, "満杯盤面では発火(消費)しない");
+    eq(st.windCounter, interval - 1, "動かせる駒がゼロなら足止め(interval-1で据え置き)");
+    // その後1マス空けると、次のターンですぐ発火する(dx=1,dy=1の下流=右下角(5,5)を空ける)
+    st.cells[L.idx(5, 5, 6)] = null;
+    const ev = L.maybeWindDrift(st);
+    assert(ev, "空きができた次のターンで即発火");
+    eq(ev.moved.length > 0, true, "空きに向けて実際に駒が動く");
+    eq(st.windDrifts, 1, "発火カウントが増える");
+
+    // 連続する同一方向の風で駒が壁際に押し固まった後、以降は発火を消費しない
+    const st2 = mkState(Array(8).fill(windyPh), 5);
+    st2.cells.fill(null); st2.blocked = {};
+    const rng = L.mulberry32(5);
+    let placed = 0;
+    while (placed < 12) { const i = Math.floor(rng() * 36); if (!st2.cells[i]) { st2.cells[i] = { type: L.BASE_TYPES[placed % 4] }; placed++; } }
+    let cycleMoves = [];
+    for (let cycle = 0; cycle < 6; cycle++) {
+      let ev2 = null;
+      for (let t = 0; t < interval; t++) ev2 = L.maybeWindDrift(st2) || ev2;
+      cycleMoves.push(ev2 ? ev2.moved.length : 0);
+    }
+    // 押し固まった後は「発火したが何も動かない」が存在しないこと(0マス移動の発火が無い)
+    const st3 = mkState(Array(8).fill(windyPh), 5);
+    st3.cells.fill(null); st3.blocked = {};
+    const rng3 = L.mulberry32(5);
+    placed = 0;
+    while (placed < 12) { const i = Math.floor(rng3() * 36); if (!st3.cells[i]) { st3.cells[i] = { type: L.BASE_TYPES[placed % 4] }; placed++; } }
+    let zeroMoveFires = 0, totalFires = 0;
+    for (let cycle = 0; cycle < 8; cycle++) {
+      for (let t = 0; t < interval; t++) {
+        const ev3 = L.maybeWindDrift(st3);
+        if (ev3) { totalFires++; if (ev3.moved.length === 0) zeroMoveFires++; }
+      }
+    }
+    eq(zeroMoveFires, 0, "「発火したのに何も動かない」イベントは存在しない");
+    assert(totalFires >= 1, "少なくとも1回は発火する");
   })();
 
   /* ================= 27e. 風の持ち越し(フェーズ移行リセットバグの回帰) ================= */
