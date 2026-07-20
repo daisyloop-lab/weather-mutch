@@ -1213,15 +1213,26 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     const out = [];
     const par = Math.round(st.quotaPerPhase * st.phases.length * CONFIG.parFactorFor(st.phases.length));
     const r = ref || {};
-    // 1) 手数: 自己平均と比較(履歴があれば)、無ければpar基準
+    // 1) 手数: 自己平均と比較(履歴があれば)、無ければpar基準。
+    // 閾値は固定値ではなく平均の12%(最低3手)とし、平均手数が多い/少ないゲームどちらでも
+    // 「ちょっとのブレ」では反応せず、意味のある差だけを「少ない/多め」として拾う
     if (r.plays >= 1 && Number.isFinite(r.avgMoves)) {
+      const threshold = Math.max(3, Math.round(r.avgMoves * 0.12));
       const d = Math.round(r.avgMoves - st.moveCount);
-      if (d >= 3) out.push(`自己平均より${d}手少ないクリア!`);
-      else if (d <= -3) out.push(`じっくり型: 自己平均より${-d}手多め`);
+      if (d >= threshold) out.push(`自己平均より${d}手少ないクリア!`);
+      else if (d <= -threshold) out.push(`じっくり型: 自己平均より${-d}手多め`);
       else out.push("自己平均どおりの安定したクリア");
     } else {
-      if (st.effectiveMoves <= par) out.push(`標準手数(${par}手)以内の効率クリア!`);
-      else out.push(`まずは完走! 次は標準手数${par}手が目標`);
+      // 実質手数(連鎖ボーナスで差し引いた内部指標)がparの基準。生の手数と食い違って
+      // 見えないよう、ボーナスで下がっている場合は必ずその数字も明示する
+      const eff = Math.round(st.effectiveMoves);
+      if (st.effectiveMoves <= par) {
+        out.push(eff < st.moveCount
+          ? `連鎖ボーナスで実質${eff}手 — 標準${par}手以内の効率クリア!`
+          : `標準手数(${par}手)以内の効率クリア!`);
+      } else {
+        out.push(`まずは完走! 次は標準手数${par}手が目標`);
+      }
     }
     // 2) 連鎖・コンボ・巻き込み・自力(優先順)
     if (r.plays >= 1 && Number.isFinite(r.avgChains) && st.chainCount >= r.avgChains + 1 && st.chainCount >= 2) {
@@ -2574,8 +2585,12 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     const areas = store.get("wm.areasCleared", []);
     if (!areas.includes(areaCode)) { areas.push(areaCode); store.set("wm.areasCleared", areas); }
     unlockDex(L.dexOnEnding(st, { playDays: days.length, areasCleared: areas.length }));
-    // ひとことコメント: 過去プレイの自己平均と比較(履歴が無ければ標準手数基準)
-    const hist = store.get("wm.history", []);
+    // ひとことコメント: 過去プレイの自己平均と比較(履歴が無ければ標準手数基準)。
+    // バランス調整でルール自体が変わった過去バージョンの記録は比較対象から除外し、
+    // 「現バージョンでの自己平均」だけを見るようにする(異なるルール同士を混ぜて
+    // 比較すると、片方に偏った判定が続けて出てしまうため)
+    const histAll = store.get("wm.history", []);
+    const hist = histAll.filter((h) => h.version === L.APP_VERSION);
     const ref = hist.length ? {
       plays: hist.length,
       avgMoves: hist.reduce((a, h) => a + h.moves, 0) / hist.length,
@@ -2584,8 +2599,8 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     } : null;
     const comments = L.endingComments(st, ref);
     $("#endComments").innerHTML = comments.map((c) => `<div class="end-comment">${c}</div>`).join("");
-    hist.push({ moves: st.moveCount, chains: st.chainCount, combo: st.maxCombo, stars: L.starRating(st) });
-    store.set("wm.history", hist.slice(-50));
+    histAll.push({ moves: st.moveCount, chains: st.chainCount, combo: st.maxCombo, stars: L.starRating(st), version: L.APP_VERSION });
+    store.set("wm.history", histAll.slice(-50));
     const stars = L.starRating(st);
     $("#endStars").innerHTML = [1, 2, 3].map((i) => `<span class="star ${i <= stars ? "on" : ""}">★</span>`).join("");
     const digest = L.weatherDigest(st.phases);
