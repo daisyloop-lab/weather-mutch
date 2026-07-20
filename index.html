@@ -107,6 +107,7 @@ button { font-family: inherit; color: inherit; }
 
 /* ---- フェーズカード(観測カード) ---- */
 .phase-card {
+  position: relative;
   background: var(--card); border: 1px solid var(--card-line); border-radius: var(--radius);
   padding: 12px 16px 10px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
 }
@@ -117,6 +118,26 @@ button { font-family: inherit; color: inherit; }
   font-variant-numeric: tabular-nums; font-family: "Hiragino Kaku Gothic ProN", ui-monospace, monospace;
 }
 #phaseText { font-size: 12px; color: var(--ink-soft); }
+#phaseText.expandable { cursor: pointer; text-decoration: underline dotted; text-decoration-color: var(--card-line); text-underline-offset: 2px; }
+#phaseText.expandable::after { content: " ▾"; font-size: 9px; }
+#phaseText.expandable[aria-expanded="true"]::after { content: " ▴"; }
+/* 予報文の全文吹き出し: 省略表示から生えているように見せる白背景ポップオーバー。
+   絶対配置でオーバーレイするため、開閉してもカード全体のレイアウトは動かない */
+#phaseTextFull {
+  position: absolute; z-index: 12; --tail-x: 24px;
+  max-width: min(80%, 300px); background: #FFFFFF; color: var(--ink);
+  font-size: 12px; line-height: 1.7; border-radius: 12px;
+  padding: 10px 13px; box-shadow: 0 6px 20px rgba(38, 49, 63, 0.16), 0 0 0 1px rgba(38, 49, 63, 0.06);
+}
+#phaseTextFull::before {
+  content: ""; position: absolute; top: -6px; left: var(--tail-x);
+  width: 12px; height: 12px; background: #FFFFFF;
+  clip-path: polygon(0% 100%, 100% 100%, 50% 0%);
+  box-shadow: -1px -1px 1px rgba(38, 49, 63, 0.04);
+}
+body.dark-sky #phaseTextFull { background: #F4F7FA; color: #26313F; }
+body.dark-sky #phaseTextFull::before { background: #F4F7FA; }
+@media (prefers-reduced-motion: reduce) { #phaseTextFull { transition: none; } }
 /* 24時間タイムライン: 予報の帯の上を「いま」が進む */
 #timeline { position: relative; margin-top: 12px; }
 #tlTrack {
@@ -148,21 +169,6 @@ button { font-family: inherit; color: inherit; }
 body.dark-sky #tlCursor { background: #9EC9F2; box-shadow: 0 0 8px rgba(158, 201, 242, 0.9); }
 body.dark-sky #tlCursor::after { color: #9EC9F2; }
 @media (prefers-reduced-motion: reduce) { #tlCursor, .tl-seg { transition: none; } }
-#windRow {
-  display: flex; align-items: center; gap: 8px; margin-top: 8px;
-  font-size: 11px; color: var(--ink-soft); font-weight: 700;
-}
-#windArrow {
-  display: inline-grid; place-items: center; width: 20px; height: 20px;
-  border-radius: 50%; background: rgba(46, 111, 176, 0.14); color: var(--accent);
-  font-size: 13px; font-weight: 700;
-}
-body.dark-sky #windArrow { background: rgba(158, 201, 242, 0.2); color: #9EC9F2; }
-#windCount { margin-left: auto; font-variant-numeric: tabular-nums; }
-#windCount.imminent { color: #C25A2E; animation: remainPulse 0.9s ease infinite; }
-body.dark-sky #windCount.imminent { color: #FFB98A; }
-#windCount.jammed { color: var(--ink-soft); font-style: italic; }
-#board.board-wind .tile { transition: transform 0.45s cubic-bezier(0.35, 0, 0.25, 1); }
 .phase-read { display: flex; align-items: center; gap: 16px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--card-line); }
 .read { display: flex; flex-direction: column; }
 .read b { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -350,6 +356,7 @@ body.dark-sky #toast.dex { color: #FFD97A; }
 footer { font-size: 10px; color: var(--ink-soft); text-align: center; line-height: 1.7; padding-top: 2px; }
 footer .legend { font-weight: 700; letter-spacing: 0.02em; }
 footer .once { letter-spacing: 0.04em; }
+footer .credit { margin-top: 4px; opacity: 0.7; letter-spacing: 0.03em; font-variant-numeric: tabular-nums; }
 
 /* ---- オーバーレイ共通 ---- */
 .overlay {
@@ -450,16 +457,12 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     <div id="phaseDate" class="phase-date">--月--日</div>
     <div class="phase-top">
       <span id="phaseTime">--:--</span>
-      <span id="phaseText"></span>
+      <span id="phaseText" role="button" aria-expanded="false" aria-label="予報文(タップで全文表示)"></span>
     </div>
+    <div id="phaseTextFull" hidden></div>
     <div id="timeline" aria-label="24時間の進行">
       <div id="tlTrack"></div>
       <div id="tlCursor"></div>
-    </div>
-    <div id="windRow" hidden>
-      <span id="windArrow">↓</span>
-      <span id="windLabel">北の風・やや強</span>
-      <span id="windCount">風まで 4</span>
     </div>
     <div class="phase-read">
       <span class="read"><b id="phasePops">--%</b><span>降水確率</span></span>
@@ -494,6 +497,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     <div class="legend">うごき: ☀️縦横に滑走 / ☂️縦のみ / ❄️横のみ / ☁️と特殊駒は8方向に1歩(同じ天気は巻き込んで貫通)</div>
     <div class="once">「今日のウェザー・マッチ」— 実際の予報が題材のため、盤面は毎日・毎時変わります</div>
     <div>出典: 気象庁ホームページ(天気予報データを加工して利用) / 音が出ます(🔊で切替)</div>
+    <div id="appCredit" class="credit">v1.0.0 · © 2026 daisyloop-lab</div>
   </footer>
 </div>
 
@@ -506,7 +510,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     <div id="endTimeline"></div>
     <div id="endOnce"></div>
     <button id="replayBtn" class="primary">最新の予報でもう一度</button>
-    <div class="end-note">出典: 気象庁ホームページ(加工して利用)</div>
+    <div class="end-note">出典: 気象庁ホームページ(加工して利用) · <span id="endVersion"></span></div>
   </div>
 </div>
 
@@ -530,8 +534,6 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       <p>☀️ 着地マスの周囲8マスの濡れ/凍結を乾かす<br>
          ☂️ 着地マスの縦1列をまとめて洗い流す<br>
          ❄️ 着地マスの横1列をブリザードで消す</p>
-      <h3>風 💨</h3>
-      <p>風が「やや強く」以上の時間帯は、数ターンごとに<b>全ての駒が風下へ1マス流されます</b>(風向はカードに表示。北の風=南へ流れる)。空きが無い駒・端の駒は動きません。☂️や❄️など<b>自力では動けない向きへ運んでもらう</b>チャンスにもなります。風下側が駒で埋まっていて誰も動かせない時は「満杯で足止め中」と表示され、空きができ次第すぐに吹きます。</p>
       <h3>濡れマス 💧 / 凍結マス ❄</h3>
       <p>降水確率が高い時間帯・雪の時間帯に現れる<b>入れないマス</b>。数ターンで自然に消えます。滑走が止まるので<b>「壁」として利用</b>もできます。</p>
       <h3>特殊駒(チャンス)</h3>
@@ -579,6 +581,10 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
 (function (global) {
   "use strict";
 
+  /* ---------------- バージョン・クレジット(単一のソース) ---------------- */
+  const APP_VERSION = "1.0.0";
+  const APP_CREDIT = "© 2026 daisyloop-lab";
+
   /* ---------------- 調整用パラメータ(仮値。相談しながら詰める) ---------------- */
   const CONFIG = {
     boardW: 6,
@@ -614,7 +620,6 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     // スライド移動: falseなら障害物/端まで滑る(強制スライド)。trueで経路途中も選択可
     slideStopAnywhere: false,
     // 風ドリフト: 強度→発生周期(ターン)。強いほど頻繁に吹く
-    windInterval: { 1: 4, 2: 3 },
     // 貫通の巻き込み上限(1スライドで消せる同種の数)。0=無制限。
     // 上限に達した場合、そのマスで停止する(それ以上は進まない)
     sweepLimit: 0,
@@ -678,8 +683,6 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       skillsUsed: {},              // このプレイで発動したスキル種(図鑑用)
       lastMovePairs: 0,            // 直前手のマージペア数(加圧スポーン判定用)
       sweepTotal: 0,               // 巻き込み消去の累計(評価コメント用)
-      windCounter: 0,              // 風ドリフトまでのターン計数(フェーズごとにリセット)
-      windDrifts: 0,               // 風ドリフト発生回数(図鑑・コメント用)
       ended: false,
     };
     seedInitialItems(st, CONFIG.initialItems);
@@ -1009,76 +1012,10 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     // 4) ブロック追加発生
     ev.blockedNew = maybeSpawnBlocks(st);
 
-    // 5) 風ドリフト: フェーズの風が「やや強く」以上なら周期到来で全駒が風下へ1マス
-    ev.wind = maybeWindDrift(st);
-
-    // 6) 手詰まり検知
+    // 5) 手詰まり検知
     if (!anyValidMove(st)) ev.rescue = rescue(st);
 
     return ev;
-  }
-
-  /* 風の状態(UI表示用): {dirName, dx, dy, strength, turnsToWind, jammed} | null。
-   * jammed: 周期到来済みだが盤面がその方向へ押し固まっていて動かせる駒が無い状態
-   * (足止め中)。UIで「風まで足止め中」等の表示に使う */
-  function windStatus(st) {
-    const w = currentPhase(st) && currentPhase(st).wind;
-    if (!w || !w.strength) return null;
-    const interval = CONFIG.windInterval[w.strength] || 4;
-    const jammed = st.windCounter >= interval - 1 && planWindDrift(st, w).moved.length === 0;
-    return Object.assign({}, w, { turnsToWind: Math.max(0, interval - st.windCounter), jammed });
-  }
-
-  /* 実際に何マス動かせるかを事前計算する(盤面を変更しない dry-run)。
-   * 風下側(移動先方向に遠い駒)から処理し、連鎖的な詰め込みを許す。 */
-  function planWindDrift(st, w) {
-    const cells = st.cells.slice(); // dry-run用の作業コピー(参照はそのまま、書き換えのみ複製)
-    const order = [];
-    for (let i = 0; i < cells.length; i++) if (cells[i]) order.push(i);
-    order.sort((a, b) => {
-      const [ax, ay] = xy(a, st.w), [bx, by] = xy(b, st.w);
-      return (bx * w.dx + by * w.dy) - (ax * w.dx + ay * w.dy);
-    });
-    const moved = [];
-    for (const i of order) {
-      const [x, y] = xy(i, st.w);
-      const nx = x + w.dx, ny = y + w.dy;
-      if (nx < 0 || ny < 0 || nx >= st.w || ny >= st.h) continue;
-      const ni = idx(nx, ny, st.w);
-      if (cells[ni] || st.blocked[ni]) continue;
-      cells[ni] = cells[i];
-      cells[i] = null;
-      moved.push({ from: i, to: ni });
-    }
-    return { cells, moved };
-  }
-
-  /* 周期到来なら全駒を風下へ1マス流す(風下側の駒から処理=列ごと押し流される)。
-   * 移動先が盤内かつ空きかつ非ブロックの駒だけ動く。自動マージはしない。
-   *
-   * 盤面がその方向へ既に押し固まっていて1マスも動かせない場合、
-   * 「発火はしたが何も起きない」を消費してカウンターだけ空回りさせるのを避けるため、
-   * 周期到来を一時的に足止め(windCounter を interval-1 に据え置き)し、
-   * 次のターン以降、動かせる駒が生まれ次第すぐ発火できるようにする。 */
-  function maybeWindDrift(st) {
-    const w = currentPhase(st) && currentPhase(st).wind;
-    // 穏やかな時間帯は計数を「一時停止」(リセットしない)。
-    // 3時間スロットの風速は閾値前後でゆらぐため、リセットすると
-    // 断続的な風の日に永遠に発火しなくなる
-    if (!w || !w.strength) { return null; }
-    const interval = CONFIG.windInterval[w.strength] || 4;
-    st.windCounter++;
-    if (st.windCounter < interval) return null;
-    const plan = planWindDrift(st, w);
-    if (!plan.moved.length) {
-      // 動かせる駒が無い: 消費せず足止め。空きができ次第、次のターンで即発火する
-      st.windCounter = interval - 1;
-      return null;
-    }
-    st.windCounter = 0;
-    st.cells = plan.cells;
-    st.windDrifts++;
-    return { dirName: w.dirName, dx: w.dx, dy: w.dy, strength: w.strength, moved: plan.moved };
   }
 
   function advancePhase(st, ev) {
@@ -1111,7 +1048,6 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     }
     st.blocked = nb;
     // 風カウンターはフェーズをまたいで持ち越す(風の日は吹き続ける)。
-    // 穏やかなフェーズに入った時点で maybeWindDrift 側がリセットする
     // 予告キューは新フェーズの比率で引き直す(切替の瞬間に予告も天気が変わる)
     st.spawnQueue = [];
     fillSpawnQueue(st);
@@ -1231,7 +1167,6 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     { id: "speed", name: "疾風", glyph: "🌪️", cond: "45手以内でクリアする", desc: "" },
     { id: "days3", name: "観測三日目", glyph: "📔", cond: "3日(暦日)以上プレイする", desc: "毎日の空を記録するのは観測の基本。気象人日記への第一歩。" },
     { id: "areas2", name: "広域観測", glyph: "🗾", cond: "2つ以上のエリアでクリアする", desc: "同じ日でも空はエリアごとに違う。" },
-    { id: "windy", name: "風の通り道", glyph: "💨", cond: "風の強い日(やや強く以上)を最後まで遊ぶ", desc: "「やや強い風」は平均10m/s以上。傘がまっすぐさせない強さ。" },
   ];
 
   const DEX_MERGE_TYPES = BASE_TYPES.concat(CHANCE_TYPES);
@@ -1253,7 +1188,6 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     const m = meta || {};
     if (st.moveCount <= 45) ids.push("speed");
     if (st.skillsUsed && st.skillsUsed.sun && st.skillsUsed.rain && st.skillsUsed.snow) ids.push("allskill");
-    if (st.phases.some((p) => p.wind && p.wind.strength >= 1)) ids.push("windy");
     if ((m.playDays || 0) >= 3) ids.push("days3");
     if ((m.areasCleared || 0) >= 2) ids.push("areas2");
     const ph = st.phases;
@@ -1335,13 +1269,13 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
   }
 
   const api = {
+    APP_VERSION, APP_CREDIT,
     CONFIG, BASE_TYPES, CHANCE_TYPES, isChance,
     mulberry32, idx, xy, neighbors,
     createState, currentPhase, rollType, chanceEligible,
     emptyCells, validTargets, applyMove, endTurn, fireSkill, fillSpawnQueue,
     DEX, dexOnMerge, dexOnEnding, DIRS, MOVEMENT, movementFor,
     anyValidMove, rescue, starRating, weatherDigest, remainingQuota, endingComments,
-    windStatus, maybeWindDrift, planWindDrift,
     blockRuleFor, spawnBlocks,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
@@ -1427,65 +1361,6 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     let best = "cloud", bv = -1;
     for (const k of Object.keys(weights)) if (weights[k] > bv) { bv = weights[k]; best = k; }
     return best;
-  }
-
-  /* ---------------- 風 ----------------
-   * 風向は「吹いてくる方角」。北の風=北から南へ吹く → 駒は南(下)へ流れる。
-   * 強度: 0=穏やか(ドリフトなし) / 1=やや強い / 2=強い
-   * VPFDのwind構造は非公式・未確定のため防御的にパースし、
-   * 取れなければ府県予報テキスト(「北の風 やや強く」)へフォールバック */
-  const WIND_DIRS = [
-    ["北西", 1, 1], ["北東", -1, 1], ["南西", 1, -1], ["南東", -1, -1],
-    ["北", 0, 1], ["南", 0, -1], ["東", -1, 0], ["西", 1, 0],
-  ]; // 複合方位を先に走査(「北北西」→北西に丸める)
-  function windVector(dirText) {
-    if (!dirText) return null;
-    for (const [name, dx, dy] of WIND_DIRS) {
-      if (dirText.includes(name)) return { dirName: name, dx, dy };
-    }
-    return null;
-  }
-  function strengthFromText(text) {
-    if (!text) return 0;
-    if (/非常に強|強く/.test(text) && !/やや強く/.test(text)) return 2;
-    if (/やや強く/.test(text)) return 1;
-    if (/非常に強|強い/.test(text)) return 2;
-    return 0;
-  }
-  /* VPFDのwind[i]から{dirText, speed}を防御的に抽出 */
-  function vpfdWindAt(windArr, i) {
-    try {
-      const w = windArr && windArr[i];
-      if (w == null) return null;
-      if (typeof w === "string") return { dirText: w, speed: null };
-      const dirText = typeof w.direction === "string" ? w.direction
-        : (w.direction && (w.direction.jp || w.direction.value)) || (typeof w.name === "string" ? w.name : null);
-      // 実測: rangeは m/s の範囲文字列(例:"6 9")、speedは風力階級寄りの小さい整数で
-      // 生のm/sとは限らない。m/sが分かるrangeを優先し、無ければspeedを補助的に使う
-      let speed = null;
-      if (typeof w.range === "string") {
-        const m = w.range.match(/(\d+(?:\.\d+)?)/g);
-        if (m) speed = Math.max(...m.map(Number));
-      }
-      if (speed == null) {
-        const rawSpeed = w.speed != null ? w.speed : w.value;
-        if (rawSpeed != null && Number.isFinite(parseFloat(rawSpeed))) speed = parseFloat(rawSpeed);
-      }
-      return dirText ? { dirText, speed } : null;
-    } catch (e) { return null; }
-  }
-  /* フェーズの風を決定: VPFD(3時間)優先、強度は風速と日別テキストの強い方 */
-  function windForPhase(vpfdWind, dailyWindText) {
-    const textStrength = strengthFromText(dailyWindText);
-    let vec = null, speedStrength = 0;
-    if (vpfdWind) {
-      vec = windVector(vpfdWind.dirText);
-      if (vpfdWind.speed != null) speedStrength = vpfdWind.speed >= 10 ? 2 : vpfdWind.speed >= 6 ? 1 : 0;
-    }
-    if (!vec) vec = windVector(dailyWindText);
-    if (!vec) return null;
-    const strength = Math.max(speedStrength, textStrength);
-    return { dirName: vec.dirName, dx: vec.dx, dy: vec.dy, strength };
   }
 
   /* VPFDの3時間天気文字列 → 比率 */
@@ -1579,7 +1454,6 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       return {
         code: ts.areas[areaIndex].weatherCodes[pick],
         text: (ts.areas[areaIndex].weathers || [])[pick] || "",
-        windText: (ts.areas[areaIndex].winds || [])[pick] || "",
       };
     } catch (e) { return null; }
   }
@@ -1640,7 +1514,6 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
         weights,
         dominant: dominantOf(weights),
         weatherText: dw.text,
-        wind: windForPhase(null, dw.windText),
         tempMin: min, tempMax: max,
         source: "pops6h",
       });
@@ -1695,7 +1568,6 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
         weights,
         dominant: dominantOf(weights),
         weatherText: (dw && dw.text) || a.weather[i],
-        wind: windForPhase(vpfdWindAt(a.wind, i), dw ? dw.windText : ""),
         temp,
         tempMin: dayTemps.min, tempMax: dayTemps.max,
         source: "vpfd3h",
@@ -1740,7 +1612,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
           areas: [{ area: { name: "デモ地方", code: "999999" },
                     weatherCodes: ["212", "300"],
                     weathers: ["くもり 夜 雨 所により 雷を伴う", "雨 時々 くもり"],
-                    winds: ["北の風 やや強く", "北西の風 強く"] }],
+                    }],
         },
         { timeDefines: defs, areas: [{ area: { name: "デモ地方", code: "999999" }, pops }] },
         {
@@ -1770,8 +1642,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     return {
       firstAreaCode: "999999", publishingOffice: "デモ", infoType: "デモ",
       reportDateTime: base.toISOString(),
-      areaTimeSeries: { timeDefines, weather: weathers,
-        wind: weathers.map((_, i) => ({ direction: i < 4 ? "北" : "南西", speed: i < 4 ? 7 : 4 })) },
+      areaTimeSeries: { timeDefines, weather: weathers },
       pointTimeSeries: { pointNameJP: "デモ", timeDefines: timeDefines.map((d) => ({ dateTime: d.dateTime })), temperature },
     };
   }
@@ -1836,7 +1707,6 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     popsAt, popsForRange, dailyWeatherAt, tempsAt, sameJstDate,
     buildPhasesFromForecast, buildPhasesFromVPFD, validateVPFD, rangeLabel,
     mockForecast, mockVPFD, loadPhases, loadAreaList,
-    windVector, strengthFromText, vpfdWindAt, windForPhase,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else global.WMWeather = api;
@@ -1971,7 +1841,6 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       select() { tone(660, 0.06, "sine", 0.08); },
       deny() { tone(196, 0.12, "sine", 0.12); },
       rescueSnd() { tone(440, 0.3, "sine", 0.14, 0, 660); tone(660, 0.3, "sine", 0.12, 0.18, 880); },
-      wind() { noise(0.55, 0.18, 700, 0, 1800); noise(0.4, 0.1, 350, 0.1, 900); }, // 吹き抜ける風
       get muted() { return muted; },
       set muted(v) { muted = v; store.set("wm.muted", v); },
       get volume() { return volume; },
@@ -2045,13 +1914,12 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       result = { phases: W.buildPhasesFromForecast(W.mockForecast(now), now), mode: "demo", areaName: "デモ地方" };
     }
     phaseMeta = result;
-    window.WMFetchDebug = { mode: result.mode, areaCode, debug: result.debug || null,
-      phases: result.phases.map((p) => ({ label: p.label, pops: p.pops, dominant: p.dominant, wind: p.wind })) };
+    window.WMFetchDebug = { version: L.APP_VERSION, mode: result.mode, areaCode, debug: result.debug || null,
+      phases: result.phases.map((p) => ({ label: p.label, pops: p.pops, dominant: p.dominant })) };
     console.info("Weather Match boot:", JSON.stringify(window.WMFetchDebug));
     st = L.createState(result.phases);
     selected = -1; setBusy(false);
     blockHintShown = { wet: false, ice: false };
-    windHintShown = false;
     tileEls.clear();
     $("#tiles").innerHTML = "";
     $("#ending").hidden = true;
@@ -2138,9 +2006,25 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     const popsEl = $("#phasePops");
     popsEl.textContent = ph.pops == null ? "--%" : ph.pops + "%";
     popsEl.title = ph.pops == null ? "この時間帯の降水確率は公式値が未提供です(予報の発表切替直後など)" : "";
-    const parts = [];
-    if (ph.weatherText) parts.push(shorten(ph.weatherText, 14));
-    $("#phaseText").textContent = parts.join(" ");
+    // 予報文: 省略表示をタップすると全文が下の行に展開される(長文にも対応)
+    const textEl = $("#phaseText"), fullEl = $("#phaseTextFull");
+    if (ph.weatherText !== phaseTextCache) {
+      phaseTextCache = ph.weatherText;
+      phaseTextExpanded = false; // フェーズが変わったら展開状態をリセット
+    }
+    if (ph.weatherText) {
+      const truncated = ph.weatherText.length > 14;
+      textEl.textContent = shorten(ph.weatherText, 14);
+      textEl.classList.toggle("expandable", truncated);
+      textEl.setAttribute("aria-expanded", String(phaseTextExpanded));
+      textEl.tabIndex = truncated ? 0 : -1;
+      fullEl.textContent = ph.weatherText;
+      const showFull = truncated && phaseTextExpanded;
+      fullEl.hidden = !showFull;
+      if (showFull) positionPhaseTextBubble(textEl, fullEl);
+    } else {
+      textEl.textContent = ""; textEl.classList.remove("expandable"); fullEl.hidden = true;
+    }
     const t = [];
     if (typeof ph.temp === "number") t.push(`${ph.temp}°`);
     else {
@@ -2154,20 +2038,6 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       seg.classList.toggle("past", i < st.phaseIndex);
       seg.classList.toggle("now", i === st.phaseIndex);
     });
-    // 風インジケーター
-    const ws = L.windStatus(st);
-    const wr = $("#windRow");
-    if (ws) {
-      wr.hidden = false;
-      const ARROW = { "0,1": "↓", "0,-1": "↑", "1,0": "→", "-1,0": "←", "1,1": "↘", "-1,1": "↙", "1,-1": "↗", "-1,-1": "↖" };
-      $("#windArrow").textContent = ARROW[ws.dx + "," + ws.dy] || "↓";
-      $("#windLabel").textContent = `${ws.dirName}の風・${ws.strength >= 2 ? "強" : "やや強"}`;
-      $("#windCount").textContent = ws.jammed ? "満杯で足止め中" : ws.turnsToWind === 0 ? "まもなく吹く" : `風まで ${ws.turnsToWind}`;
-      $("#windCount").classList.toggle("imminent", !ws.jammed && ws.turnsToWind <= 1);
-      $("#windCount").classList.toggle("jammed", !!ws.jammed);
-    } else {
-      wr.hidden = true;
-    }
     // クリアまでの残りマージ数(終盤はラストスパート表示)
     const remain = L.remainingQuota(st);
     const rEl = $("#remainN");
@@ -2192,6 +2062,40 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
   }
 
   function shorten(s, n) { return s.length > n ? s.slice(0, n) + "…" : s; }
+
+  /* 吹き出し(全文ポップオーバー)を省略表示の実測位置に追随させる。
+   * 折り返し行数・カード幅に関わらず、常に省略文の直下・その左端付近から
+   * 生えているように見えるよう、開くたびに実測して配置する */
+  function positionPhaseTextBubble(anchorEl, bubbleEl) {
+    const parent = bubbleEl.offsetParent || anchorEl.offsetParent;
+    if (!parent) return;
+    // 縦位置: phaseTextは巨大な時刻文字とbaseline揃えのため行内で中央寄りに来るので、
+    // 自身の行全体(.phase-top)の下端を基準にする(巻き添えのオーバーラップを防ぐ)
+    const row = anchorEl.closest(".phase-top") || anchorEl;
+    const rowBottom = row.offsetTop + row.offsetHeight;
+    bubbleEl.style.top = (rowBottom + 8) + "px";
+    bubbleEl.style.left = "0px"; // 幅計測のため一旦左端に置く
+    bubbleEl.style.right = "auto";
+    const parentW = parent.clientWidth;
+    const bubbleW = bubbleEl.offsetWidth;
+    const anchorCenter = anchorEl.offsetLeft + anchorEl.offsetWidth / 2;
+    let left = Math.round(anchorCenter - bubbleW / 2);
+    left = Math.max(4, Math.min(left, parentW - bubbleW - 4));
+    bubbleEl.style.left = left + "px";
+    const tailX = Math.max(12, Math.min(anchorCenter - left - 6, bubbleW - 24));
+    bubbleEl.style.setProperty("--tail-x", tailX + "px");
+  }
+  let phaseTextExpanded = false, phaseTextCache = null;
+  function togglePhaseText() {
+    if (!$("#phaseText").classList.contains("expandable")) return;
+    phaseTextExpanded = !phaseTextExpanded;
+    renderPhaseBar();
+  }
+  function closePhaseText() {
+    if (!phaseTextExpanded) return;
+    phaseTextExpanded = false;
+    renderPhaseBar();
+  }
 
   function renderHud() {
     $("#moves").textContent = st.moveCount;
@@ -2388,16 +2292,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     const ev = L.endTurn(st);
     if (ev.ended) { renderAll(); showEnding(); setBusy(false); return; }
     const proceed = () => {
-      if (ev.wind && ev.wind.moved.length && !reducedMotion) {
-        boardEl().classList.add("board-wind"); // 駒がまとめて流れるゆったり遷移
-        setTimeout(() => boardEl().classList.remove("board-wind"), 520);
-      }
       renderAll();
-      if (ev.wind) {
-        Sound.wind();
-        emitWindStreaks(ev.wind);
-        if (ev.wind.moved.length) maybeWindHint();
-      }
       for (const b of ev.blockedNew || []) maybeBlockHint(b.kind);
       if (ev.rescue) handleRescue(ev.rescue);
       setBusy(false);
@@ -2422,11 +2317,6 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
         void document.body.offsetWidth;                        // アニメーション再発火
         document.body.classList.add("sky-wash");               // 新しい空色の一瞬の強調ウォッシュ
         renderAll();                                           // 新transform適用 → 0.72sで流れる
-        if (ev.wind) {
-          Sound.wind();
-          emitWindStreaks(ev.wind);
-          if (ev.wind.moved.length) maybeWindHint();
-        }
         for (const b of ev.blockedNew || []) maybeBlockHint(b.kind);
         timelapseTimer = setTimeout(() => {
           board.classList.remove("board-timelapse", "phase-shift");
@@ -2454,13 +2344,6 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     bannerTimer = setTimeout(() => b.classList.remove("run"), 1150);
   }
 
-  let windHintShown = false;
-  function maybeWindHint() {
-    if (windHintShown) return;
-    windHintShown = true;
-    showToast("💨 風が駒を流した! ☂️❄️も苦手な向きへ運べる", "chain", 2400);
-  }
-
   function maybeBlockHint(kind) {
     if (blockHintShown[kind]) return;
     blockHintShown[kind] = true;
@@ -2480,28 +2363,6 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
   const beams = [];   // 🌧️/❄️ 縦横の光ライン
   let particleRAF = 0;
   function startFxLoop() { if (!particleRAF) particleLoop(); }
-
-  /* 風ドリフト: 風向に沿って盤面を横切る光の筋 */
-  function emitWindStreaks(w) {
-    if (reducedMotion) return;
-    const canvas = $("#fx");
-    const cw = canvas.clientWidth, ch = canvas.clientHeight;
-    const len = Math.hypot(w.dx, w.dy) || 1;
-    const vx = (w.dx / len) * 9, vy = (w.dy / len) * 9;
-    for (let i = 0; i < 26; i++) {
-      particles.push({
-        x: Math.random() * cw - vx * 22,
-        y: Math.random() * ch - vy * 22,
-        vx, vy, g: 0,
-        r: 1 + Math.random() * 1.4,
-        streak: 0.1, windTrail: 14 + Math.random() * 18,
-        wdx: vx, wdy: vy,
-        life: 1, decay: 0.03 + Math.random() * 0.02,
-        c: i % 3 ? "#FFFFFF" : "#D6EAFF",
-      });
-    }
-    startFxLoop();
-  }
 
   /* フェーズ切替: 盤面全体を下から上へ流れる光の奔流(時間が進む演出) */
   function emitTimeStreaks() {
@@ -2614,14 +2475,7 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
       if (p.life <= 0) { particles.splice(i, 1); continue; }
       ctx.globalAlpha = Math.max(0, p.life);
       ctx.fillStyle = p.c;
-      if (p.windTrail) {
-        // 風向に沿って伸びる光の筋
-        ctx.save();
-        ctx.translate(p.x, p.y);
-        ctx.rotate(Math.atan2(p.wdy, p.wdx));
-        ctx.fillRect(-p.windTrail * p.life, -p.r / 2, p.windTrail * p.life, p.r);
-        ctx.restore();
-      } else if (p.streak) {
+      if (p.streak) {
         ctx.fillRect(p.x - p.r / 2, p.y, p.r, p.streak * p.life); // 上昇する光の筋
       } else {
         ctx.beginPath();
@@ -2819,6 +2673,13 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
     $("#volume").value = Math.round(Sound.volume * 100);
     updateMuteBtn();
     $("#areaBtn").addEventListener("click", openAreaPicker);
+    $("#phaseText").addEventListener("click", (e) => { e.stopPropagation(); togglePhaseText(); });
+    $("#phaseText").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); togglePhaseText(); } });
+    // ポップオーバー外をタップ/Escapeで閉じる(通常のポップオーバー作法)
+    document.addEventListener("click", (e) => {
+      if (!$("#phaseTextFull").contains(e.target) && e.target !== $("#phaseText")) closePhaseText();
+    });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePhaseText(); });
     $("#helpBtn").addEventListener("click", () => { $("#helpModal").hidden = false; });
     $("#helpClose").addEventListener("click", () => { $("#helpModal").hidden = true; });
     $("#dexBtn").addEventListener("click", () => { renderDex(); $("#dexModal").hidden = false; });
@@ -2860,17 +2721,22 @@ body.dark-sky .area-item.current { color: #9EC9F2; }
   window.WMDebug = () => {
     if (!st) return null;
     const ph = L.currentPhase(st);
-    const ws = L.windStatus(st);
     return {
+      version: L.APP_VERSION,
       mode: phaseMeta && phaseMeta.mode, areaCode, busy,
       phaseIndex: st.phaseIndex, quotaProgress: st.quotaProgress, quotaPerPhase: st.quotaPerPhase,
-      currentPhaseWind: ph && ph.wind, windCounter: st.windCounter, windTurnsToWind: ws ? ws.turnsToWind : null,
-      windDrifts: st.windDrifts, moveCount: st.moveCount,
-      allPhaseWinds: st.phases.map((p) => p.wind),
+      moveCount: st.moveCount,
     };
   };
 
-  document.addEventListener("DOMContentLoaded", () => { wire(); boot(); });
+  function applyCredit() {
+    const el = $("#appCredit");
+    if (el) el.textContent = `v${L.APP_VERSION} · ${L.APP_CREDIT}`;
+    const ev = $("#endVersion");
+    if (ev) ev.textContent = `v${L.APP_VERSION}`;
+  }
+
+  document.addEventListener("DOMContentLoaded", () => { applyCredit(); wire(); boot(); });
 })();
 </script>
 </body>
